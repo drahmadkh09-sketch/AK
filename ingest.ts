@@ -10,11 +10,12 @@ const dbInstance = new Database("dashboard.db");
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function generateWithFallback(prompt: string) {
-  const models = ["gemini-3-flash-preview", "gemini-3.1-pro-preview"];
+export async function generateWithFallback(prompt: string, providedApiKey?: string) {
+  const models = ["gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-flash-latest", "gemini-3.1-flash-lite-preview"];
   
   // Try to find a valid-looking API key
   const apiKeys = [
+    providedApiKey,
     process.env.GEMINI_API_KEY, 
     process.env.API_KEY,
     process.env.GOOGLE_API_KEY,
@@ -44,7 +45,7 @@ export async function generateWithFallback(prompt: string) {
   }) as string[];
 
   if (apiKeys.length === 0) {
-    console.warn("No valid Gemini API key found. Using static fallback.");
+    console.warn("Gemini: No valid API key found in environment. Using static fallback.");
     return null;
   }
 
@@ -53,39 +54,47 @@ export async function generateWithFallback(prompt: string) {
   for (const apiKey of apiKeys) {
     const maskedKey = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
     for (const model of models) {
-      console.log(`Attempting generation with model ${model} using key ${maskedKey}...`);
-      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-      try {
-        const response = await ai.models.generateContent({
-          model: model,
-          contents: prompt,
-          config: { responseMimeType: "application/json" }
-        });
-        
-        if (response && response.text) {
-          return response.text;
+      // Retry logic for each model/key combination
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          console.log(`Gemini: Attempting ${model} (Attempt ${attempt}) using key ${maskedKey}...`);
+          const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+          const response = await ai.models.generateContent({
+            model: model,
+            contents: prompt,
+            config: { responseMimeType: "application/json" }
+          });
+          
+          if (response && response.text) {
+            return response.text;
+          }
+        } catch (error: any) {
+          lastError = error;
+          const errorMsg = error.message?.toLowerCase() || "";
+          
+          if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("exhausted")) {
+            if (attempt === 1) {
+              console.warn(`Gemini: Quota hit for ${model}, retrying in 5s...`);
+              await sleep(5000);
+              continue;
+            }
+            console.warn(`Gemini: Quota exceeded for ${model} after retries.`);
+            break; // Try next model
+          }
+          
+          if (errorMsg.includes("400") || errorMsg.includes("invalid") || errorMsg.includes("not found")) {
+            console.warn(`Gemini: Key ${maskedKey} or model ${model} is invalid.`);
+            break; // Try next model
+          }
+          
+          console.error(`Gemini: Unexpected error with ${model}:`, error.message);
+          break; // Try next model
         }
-      } catch (error: any) {
-        lastError = error;
-        const errorMsg = error.message?.toLowerCase() || "";
-        
-        if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("exhausted")) {
-          console.warn(`Quota exceeded for ${model} with key ${maskedKey}, trying next...`);
-          await sleep(2000); // Wait a bit before trying next
-          continue;
-        }
-        
-        if (errorMsg.includes("400") || errorMsg.includes("invalid") || errorMsg.includes("not found")) {
-          console.warn(`Key ${maskedKey} or model ${model} is invalid: ${error.message}`);
-          continue;
-        }
-        
-        console.error(`Unexpected error with model ${model}:`, error.message);
       }
     }
   }
   
-  console.warn("All Gemini models and keys failed. Using static fallback.");
+  console.warn("Gemini: All models and keys failed. Using static fallback.");
   return null;
 }
 
@@ -185,21 +194,31 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
 
       // 1. Attempt Real API Pulls
       if (platformAccountId) {
-        if (acc.platform === 'Instagram' || acc.platform === 'Facebook') {
-          metrics = await fetchMetaMetrics(platformAccountId, apiKeys.meta);
-        } else if (acc.platform === 'YouTube') {
-          metrics = await fetchYouTubeMetrics(platformAccountId, apiKeys.youtube);
+        try {
+          if (acc.platform === 'Instagram' || acc.platform === 'Facebook') {
+            metrics = await fetchMetaMetrics(platformAccountId, apiKeys.meta);
+          } else if (acc.platform === 'YouTube') {
+            metrics = await fetchYouTubeMetrics(platformAccountId, apiKeys.youtube);
+          }
+        } catch (err: any) {
+          console.error(`Ingest: API call error for ${acc.handle}:`, err.message);
         }
       }
 
       // 2. Fallback to Gemini if real API fails or is not configured
       if (!metrics) {
-        console.log(`Real API pull failed or not configured for ${acc.handle}, falling back to Gemini...`);
+        let reason = "Unknown failure";
+        if (!platformAccountId) reason = "Missing Platform ID";
+        else if (acc.platform === 'YouTube' && !apiKeys.youtube) reason = "Missing YouTube API Key";
+        else if ((acc.platform === 'Instagram' || acc.platform === 'Facebook') && !apiKeys.meta) reason = "Missing Meta Access Token";
+        else reason = "Real API pull failed (check key validity)";
+
+        console.log(`Ingest: ${reason} for ${acc.handle}, falling back to Gemini...`);
         const prompt = `Provide realistic 7-day social media metrics for the account ${acc.handle} on ${acc.platform}. 
         Return ONLY a JSON object with these fields: posts_per_day_7d (float), avg_reach_7d (int), saves_7d (int), shares_7d (int), watch_time_7d (int), follower_delta_7d (int).
         Base it on the typical performance of such an account if you recognize it, otherwise provide realistic industry averages for that platform.`;
         
-        const responseText = await generateWithFallback(prompt);
+        const responseText = await generateWithFallback(prompt, apiKeys.gemini);
         if (responseText) {
           metrics = JSON.parse(responseText);
         } else {
@@ -280,6 +299,9 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
       }
       
       console.log(`Successfully ingested ${acc.handle}`);
+      
+      // Update last_ingest_ts
+      db.prepare("UPDATE accounts SET last_ingest_ts = CURRENT_TIMESTAMP WHERE id = ?").run(acc.id);
       
       // Sleep between accounts to avoid hitting rate limits
       if (!accountId) {

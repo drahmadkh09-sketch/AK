@@ -223,4 +223,16 @@ export const api = {
     });
     await handleResponse(res, 'Failed to trigger account ingestion');
   },
+  getSystemStatus: async (): Promise<{ youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean }> => {
+    const res = await fetch(`${API_BASE}/system/status`, { headers: getHeaders() });
+    return handleResponse(res, 'Failed to fetch system status');
+  },
+  testKey: async (type: string, key: string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetch(`${API_BASE}/system/test-key`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ type, key }),
+    });
+    return handleResponse(res, 'Test failed');
+  },
 };

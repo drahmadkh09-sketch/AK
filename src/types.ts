@@ -8,6 +8,7 @@ export interface Account {
   status_tag: 'active' | 'paused' | 'archived';
   cadence_target_per_week: number;
   last_post_ts: string | null;
+  last_ingest_ts: string | null;
   priority_level: 'high' | 'medium' | 'low';
 }
 

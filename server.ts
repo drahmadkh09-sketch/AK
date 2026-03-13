@@ -3,7 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
-import { ingest } from "./ingest";
+import { ingest, generateWithFallback } from "./ingest";
 import { fetchYouTubeMetrics, fetchMetaMetrics, resolveYouTubeHandle, resolveInstagramHandle, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
 
 import multer from "multer";
@@ -101,7 +101,8 @@ db.exec(`
     status_tag TEXT DEFAULT 'active',
     cadence_target_per_week INTEGER DEFAULT 1,
     last_post_ts DATETIME,
-    priority_level TEXT DEFAULT 'medium'
+    priority_level TEXT DEFAULT 'medium',
+    last_ingest_ts DATETIME
   );
 
   CREATE TABLE IF NOT EXISTS account_metrics (
@@ -588,6 +589,71 @@ async function startServer() {
     } catch (error: any) {
       console.error(`Ingestion failed for @${account.handle}:`, error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  apiRouter.get("/system/status", async (req, res) => {
+    const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+    const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+    
+    const status = {
+      youtube: !!(apiKeys.youtube || process.env.YOUTUBE_API_KEY),
+      meta: !!(apiKeys.meta || process.env.META_ACCESS_TOKEN),
+      gemini: !!(apiKeys.gemini || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY),
+      meta_expired: false,
+      youtube_invalid: false
+    };
+
+    // Quick check for meta token expiration if it exists
+    const metaToken = apiKeys.meta || process.env.META_ACCESS_TOKEN;
+    if (metaToken) {
+      try {
+        const id = await getInstagramBusinessIdFromToken(metaToken);
+        if (!id) {
+          status.meta_expired = true;
+          // Clear from DB if it's there and invalid
+          if (apiKeys.meta) {
+            const newKeys = { ...apiKeys, meta: "" };
+            db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
+          }
+        }
+      } catch (e: any) {
+        if (e.response?.data?.error?.code === 190 || e.message?.includes('expired')) {
+          status.meta_expired = true;
+          // Clear from DB if it's there and expired
+          if (apiKeys.meta) {
+            const newKeys = { ...apiKeys, meta: "" };
+            db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
+          }
+        }
+      }
+    }
+
+    res.json(status);
+  });
+
+  apiRouter.post("/system/test-key", async (req, res) => {
+    const { type, key } = req.body;
+    if (!key) return res.status(400).json({ error: "Key is required" });
+
+    try {
+      if (type === 'meta') {
+        const id = await getInstagramBusinessIdFromToken(key);
+        if (id) return res.json({ success: true, message: "Meta token is valid." });
+        return res.status(400).json({ error: "Invalid Meta token or no linked Instagram Business account found." });
+      } else if (type === 'youtube') {
+        // Try to resolve a common handle to test key
+        const id = await resolveYouTubeHandle('@youtube', key);
+        if (id) return res.json({ success: true, message: "YouTube API key is valid." });
+        return res.status(400).json({ error: "Invalid YouTube API key." });
+      } else if (type === 'gemini') {
+        const result = await generateWithFallback("Respond with 'OK'", key);
+        if (result) return res.json({ success: true, message: "Gemini API key is valid." });
+        return res.status(400).json({ error: "Invalid Gemini API key or quota exceeded." });
+      }
+      res.status(400).json({ error: "Invalid test type" });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Test failed" });
     }
   });
 

@@ -51,6 +51,43 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function SystemStatusIndicator({ status, onNavigate }: { status: { youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean } | null, onNavigate: (tab: any) => void }) {
+  if (!status) return null;
+
+  return (
+    <div className="glass-card p-4 border-white/5 bg-white/[0.01] space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[8px] font-black uppercase tracking-widest text-white/20">API Infrastructure</span>
+        <div className="flex gap-1">
+          <div className={cn("w-1.5 h-1.5 rounded-full", status.youtube ? "bg-emerald-500" : "bg-red-500")} title="YouTube API" />
+          <div className={cn("w-1.5 h-1.5 rounded-full", status.meta ? (status.meta_expired ? "bg-amber-500" : "bg-emerald-500") : "bg-red-500")} title="Meta API" />
+          <div className={cn("w-1.5 h-1.5 rounded-full", status.gemini ? "bg-emerald-500" : "bg-red-500")} title="Gemini API" />
+        </div>
+      </div>
+      
+      {status.meta_expired && (
+        <button 
+          onClick={() => onNavigate('settings')}
+          className="w-full flex items-center gap-2 text-[8px] font-black uppercase tracking-tighter text-amber-400/80 leading-tight hover:text-amber-300 transition-colors"
+        >
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />
+          <span>Meta Token Expired - Update in Settings</span>
+        </button>
+      )}
+      
+      {(!status.youtube || !status.meta || !status.gemini) && (
+        <button 
+          onClick={() => onNavigate('settings')}
+          className="w-full flex items-center gap-2 text-[8px] font-black uppercase tracking-tighter text-red-400/80 leading-tight hover:text-red-300 transition-colors"
+        >
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />
+          <span>Missing API Keys - Update in Settings</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Logo({ className = "w-10 h-10" }: { className?: string }) {
   return (
     <div className={cn("relative flex items-center justify-center", className)}>
@@ -157,15 +194,29 @@ export default function App() {
     error: null
   });
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [systemStatus, setSystemStatus] = useState<{ youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean } | null>(null);
 
   useEffect(() => {
     if (isAuthenticated) {
       fetchData();
       fetchIngestionStatus();
-      const interval = setInterval(fetchIngestionStatus, 10000); // Poll every 10s
+      fetchSystemStatus();
+      const interval = setInterval(() => {
+        fetchIngestionStatus();
+        fetchSystemStatus();
+      }, 10000); // Poll every 10s
       return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
+
+  const fetchSystemStatus = async () => {
+    try {
+      const status = await api.getSystemStatus();
+      setSystemStatus(status);
+    } catch (error) {
+      console.error('Failed to fetch system status', error);
+    }
+  };
 
   const fetchIngestionStatus = async () => {
     try {
@@ -280,8 +331,9 @@ export default function App() {
                 <SidebarItem icon={SettingsIcon} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
               </nav>
 
-              <div className="px-6 py-4">
+              <div className="px-6 py-4 space-y-4">
                 <IngestionStatusIndicator status={ingestionStatus} onTrigger={handleTriggerIngestion} />
+                <SystemStatusIndicator status={systemStatus} onNavigate={setActiveTab} />
               </div>
 
               <div className="p-8 border-t border-white/5">
@@ -952,6 +1004,7 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
               <th className="px-8 py-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Priority</th>
               <th className="px-8 py-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Status</th>
               <th className="px-8 py-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Last Pulse</th>
+              <th className="px-8 py-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Last Sync</th>
               <th className="px-8 py-6 text-[10px] font-black text-white/30 uppercase tracking-[0.3em]"></th>
             </tr>
           </thead>
@@ -996,6 +1049,11 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                 <td className="px-8 py-8">
                   <p className="text-sm font-medium text-white/40 italic font-serif">
                     {a.last_post_ts ? formatDistanceToNow(new Date(a.last_post_ts)) + ' ago' : 'No recent activity'}
+                  </p>
+                </td>
+                <td className="px-8 py-8">
+                  <p className="text-sm font-medium text-emerald-500/40 italic font-serif">
+                    {a.last_ingest_ts ? formatDistanceToNow(new Date(a.last_ingest_ts)) + ' ago' : 'Never'}
                   </p>
                 </td>
                 <td className="px-8 py-8 text-right">
@@ -2524,18 +2582,21 @@ function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUp
               type="password"
               value={settings.api_keys?.gemini || ''} 
               onChange={v => handleUpdate('api_keys', { ...settings.api_keys, gemini: v })}
+              onTest={() => api.testKey('gemini', settings.api_keys?.gemini)}
             />
             <SettingsInput 
               label="YouTube Data API Key" 
               type="password"
               value={settings.api_keys?.youtube || ''} 
               onChange={v => handleUpdate('api_keys', { ...settings.api_keys, youtube: v })}
+              onTest={() => api.testKey('youtube', settings.api_keys?.youtube)}
             />
             <SettingsInput 
               label="Meta Access Token" 
               type="password"
               value={settings.api_keys?.meta || ''} 
               onChange={v => handleUpdate('api_keys', { ...settings.api_keys, meta: v })}
+              onTest={() => api.testKey('meta', settings.api_keys?.meta)}
             />
           </div>
         </section>
@@ -2595,10 +2656,44 @@ function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUp
   );
 }
 
-function SettingsInput({ label, value, onChange, type = 'text' }: { label: string, value: string | number, onChange: (v: string) => void, type?: string }) {
+function SettingsInput({ label, value, onChange, type = 'text', onTest }: { label: string, value: string | number, onChange: (v: string) => void, type?: string, onTest?: () => void }) {
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleTest = async () => {
+    if (!onTest) return;
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      await onTest();
+      setTestResult({ success: true, message: 'Valid' });
+    } catch (e: any) {
+      setTestResult({ success: false, message: e.message });
+    } finally {
+      setIsTesting(false);
+      setTimeout(() => setTestResult(null), 3000);
+    }
+  };
+
   return (
     <div className="space-y-2">
-      <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">{label}</label>
+      <div className="flex items-center justify-between ml-1">
+        <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">{label}</label>
+        {onTest && value && (
+          <button 
+            onClick={handleTest}
+            disabled={isTesting}
+            className={cn(
+              "text-[8px] font-black uppercase tracking-widest transition-all",
+              testResult 
+                ? (testResult.success ? "text-emerald-400" : "text-rose-400")
+                : "text-brand-primary hover:text-white"
+            )}
+          >
+            {isTesting ? 'Testing...' : (testResult ? testResult.message : 'Test Key')}
+          </button>
+        )}
+      </div>
       <input 
         type={type}
         className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"

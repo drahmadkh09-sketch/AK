@@ -102,8 +102,12 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
       dislikes_7d: totalDislikes,
       recentVideos
     };
-  } catch (error) {
-    console.error('YouTube API Error:', error);
+  } catch (error: any) {
+    if (error.code === 403 || error.message?.includes('key')) {
+      console.warn('YouTube API: Invalid or missing API key.');
+    } else {
+      console.error('YouTube API Error:', error.message || error);
+    }
     return null;
   }
 }
@@ -113,8 +117,10 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
  * Requires META_ACCESS_TOKEN and the Instagram Business Account ID.
  */
 export async function fetchMetaMetrics(instagramId: string, providedAccessToken?: string): Promise<SocialMetrics | null> {
-  const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
-  if (!accessToken || !instagramId) return null;
+  const accessToken = (providedAccessToken || process.env.META_ACCESS_TOKEN || "").trim();
+  if (!accessToken || accessToken === "undefined" || accessToken === "null" || !instagramId) {
+    return null;
+  }
 
   try {
     // 1. Get account info (followers)
@@ -163,8 +169,12 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       total_followers: totalFollowers,
       likes_7d: totalLikes
     };
-  } catch (error) {
-    console.error('Meta API Error:', error);
+  } catch (error: any) {
+    if (error.response?.data?.error?.code === 190 || error.message?.includes('expired')) {
+      console.warn('Meta API: Access token has expired. Please update it in Settings.');
+    } else {
+      console.warn('Meta API Notice:', error.response?.data?.error?.message || error.message);
+    }
     return null;
   }
 }
@@ -235,8 +245,8 @@ export async function resolveInstagramHandle(handle: string, requesterBusinessId
  * Get the Instagram Business Account ID associated with the access token.
  */
 export async function getInstagramBusinessIdFromToken(providedAccessToken?: string): Promise<string | null> {
-  const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
-  if (!accessToken) return null;
+  const accessToken = (providedAccessToken || process.env.META_ACCESS_TOKEN || "").trim();
+  if (!accessToken || accessToken === "undefined" || accessToken === "null") return null;
 
   try {
     // 1. Get Facebook Pages associated with the token
@@ -265,10 +275,10 @@ export async function getInstagramBusinessIdFromToken(providedAccessToken?: stri
 
     return null;
   } catch (error: any) {
-    if (error.response?.data?.error?.code === 190) {
-      console.error('Meta API Error: Access token has expired. Please update it in Settings.');
+    if (error.response?.data?.error?.code === 190 || error.message?.includes('expired')) {
+      console.warn('Meta API: Access token has expired or is invalid. Please update it in Settings.');
     } else {
-      console.error('Error getting IG Business ID from token:', error.response?.data || error.message);
+      console.warn('Meta API Notice:', error.response?.data?.error?.message || error.message);
     }
     return null;
   }
