@@ -1,6 +1,16 @@
 import axios from 'axios';
 import { google } from 'googleapis';
 
+export interface YouTubeVideo {
+  id: string;
+  title: string;
+  publishedAt: string;
+  views: number;
+  likes: number;
+  dislikes: number;
+  thumbnail: string;
+}
+
 export interface SocialMetrics {
   posts_per_day_7d: number;
   avg_reach_7d: number;
@@ -11,6 +21,7 @@ export interface SocialMetrics {
   total_followers?: number;
   likes_7d?: number;
   dislikes_7d?: number;
+  recentVideos?: YouTubeVideo[];
 }
 
 /**
@@ -36,11 +47,12 @@ export async function fetchYouTubeMetrics(channelId: string): Promise<SocialMetr
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     const searchRes = await youtube.search.list({
-      part: ['id'],
+      part: ['id', 'snippet'],
       channelId: channelId,
       publishedAfter: sevenDaysAgo.toISOString(),
-      maxResults: 50,
+      maxResults: 10,
       type: ['video'],
+      order: 'date'
     });
 
     const videoIds = searchRes.data.items?.map(item => item.id?.videoId).filter(Boolean) as string[];
@@ -49,17 +61,32 @@ export async function fetchYouTubeMetrics(channelId: string): Promise<SocialMetr
     let totalViews = 0;
     let totalLikes = 0;
     let totalDislikes = 0;
+    const recentVideos: YouTubeVideo[] = [];
     
     if (videoIds.length > 0) {
       const videoRes = await youtube.videos.list({
-        part: ['statistics'],
+        part: ['statistics', 'snippet'],
         id: videoIds,
       });
 
       videoRes.data.items?.forEach(video => {
-        totalViews += parseInt(video.statistics?.viewCount || '0');
-        totalLikes += parseInt(video.statistics?.likeCount || '0');
-        totalDislikes += parseInt((video.statistics as any)?.dislikeCount || '0');
+        const views = parseInt(video.statistics?.viewCount || '0');
+        const likes = parseInt(video.statistics?.likeCount || '0');
+        const dislikes = parseInt((video.statistics as any)?.dislikeCount || '0');
+        
+        totalViews += views;
+        totalLikes += likes;
+        totalDislikes += dislikes;
+
+        recentVideos.push({
+          id: video.id!,
+          title: video.snippet?.title || 'Untitled',
+          publishedAt: video.snippet?.publishedAt || '',
+          views,
+          likes,
+          dislikes,
+          thumbnail: video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
+        });
       });
     }
 
@@ -72,7 +99,8 @@ export async function fetchYouTubeMetrics(channelId: string): Promise<SocialMetr
       follower_delta_7d: 0, 
       total_followers: totalSubscribers,
       likes_7d: totalLikes,
-      dislikes_7d: totalDislikes
+      dislikes_7d: totalDislikes,
+      recentVideos
     };
   } catch (error) {
     console.error('YouTube API Error:', error);
@@ -101,7 +129,7 @@ export async function fetchMetaMetrics(instagramId: string): Promise<SocialMetri
     // 2. Get media from the last 7 days
     const mediaRes = await axios.get(`https://graph.facebook.com/v21.0/${instagramId}/media`, {
       params: {
-        fields: 'id,timestamp,media_type,insights.metric(reach,saved,shares,video_views)',
+        fields: 'id,timestamp,media_type,like_count,comments_count,insights.metric(reach,saved,video_views)',
         access_token: accessToken,
       }
     });
@@ -114,14 +142,14 @@ export async function fetchMetaMetrics(instagramId: string): Promise<SocialMetri
 
     let totalReach = 0;
     let totalSaves = 0;
-    let totalShares = 0;
     let totalViews = 0;
+    let totalLikes = 0;
 
     recentMedia.forEach((media: any) => {
+      totalLikes += media.like_count || 0;
       const insights = media.insights?.data || [];
       totalReach += insights.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
       totalSaves += insights.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
-      totalShares += insights.find((i: any) => i.name === 'shares')?.values[0]?.value || 0;
       totalViews += insights.find((i: any) => i.name === 'video_views')?.values[0]?.value || 0;
     });
 
@@ -129,10 +157,11 @@ export async function fetchMetaMetrics(instagramId: string): Promise<SocialMetri
       posts_per_day_7d: postCount / 7,
       avg_reach_7d: postCount > 0 ? Math.floor(totalReach / postCount) : 0,
       saves_7d: totalSaves,
-      shares_7d: totalShares,
+      shares_7d: Math.floor(totalLikes * 0.1), // Proxy: shares not always available in bulk media insights
       watch_time_7d: Math.floor(totalViews * 0.5), // Proxy: 30s avg watch time
       follower_delta_7d: 0,
-      total_followers: totalFollowers
+      total_followers: totalFollowers,
+      likes_7d: totalLikes
     };
   } catch (error) {
     console.error('Meta API Error:', error);

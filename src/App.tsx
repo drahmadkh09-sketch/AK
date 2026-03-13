@@ -1005,6 +1005,15 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                     onChange={e => setNewAccount({...newAccount, handle: e.target.value})}
                   />
                 </div>
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Platform Account ID</label>
+                  <input 
+                    type="text" 
+                    className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
+                    placeholder="ID for API (e.g. Channel ID)"
+                    onChange={e => setNewAccount({...newAccount, platform_account_id: e.target.value})}
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1116,6 +1125,16 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                     onChange={e => setEditingAccount({...editingAccount, handle: e.target.value})}
                   />
                 </div>
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Platform Account ID</label>
+                  <input 
+                    type="text" 
+                    className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
+                    value={editingAccount.platform_account_id || ''}
+                    placeholder="ID for API (e.g. Channel ID)"
+                    onChange={e => setEditingAccount({...editingAccount, platform_account_id: e.target.value})}
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1202,14 +1221,34 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
 function MetricsView({ accounts }: { accounts: Account[] }) {
   const [selectedAccount, setSelectedAccount] = useState<number | null>(accounts[0]?.id || null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [realtimeData, setRealtimeData] = useState<any>(null);
+  const [isFetching, setIsFetching] = useState(false);
+
+  const fetchRealtime = async () => {
+    if (!selectedAccount) return;
+    setIsFetching(true);
+    try {
+      const data = await api.getRealtimeMetrics(selectedAccount);
+      setRealtimeData(data);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsFetching(false);
+    }
+  };
 
   useEffect(() => {
     if (selectedAccount) {
       api.getMetrics(selectedAccount).then(setMetrics);
+      setRealtimeData(null);
+      const acc = accounts.find(a => a.id === selectedAccount);
+      if (acc?.platform === 'YouTube') {
+        fetchRealtime();
+      }
     }
   }, [selectedAccount]);
 
-  const chartData = metrics.map(m => ({
+  const baseChartData = metrics.map(m => ({
     date: format(new Date(m.date), 'MMM dd'),
     reach: m.reach,
     engagement: m.saves + m.shares,
@@ -1220,9 +1259,30 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
     dislikes: m.dislikes_7d || 0
   })).reverse();
 
-  const latestMetric = metrics[0];
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const isYouTube = selectedAccountData?.platform === 'YouTube';
+
+  const chartData = [...baseChartData];
+  if (realtimeData && isYouTube) {
+    chartData.push({
+      date: 'LIVE',
+      reach: realtimeData.avg_reach_7d,
+      engagement: realtimeData.saves_7d + realtimeData.shares_7d,
+      followers: realtimeData.follower_delta_7d,
+      reach7d: realtimeData.avg_reach_7d * 7,
+      engagement7d: (realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0),
+      likes: realtimeData.likes_7d || 0,
+      dislikes: realtimeData.dislikes_7d || 0
+    });
+  }
+
+  const latestMetric = metrics[0];
+  
+  // Display values (prefer realtime if available)
+  const displayReach7d = (isYouTube && realtimeData) ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
+  const displayEngagement7d = (isYouTube && realtimeData) ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0)) : (latestMetric?.engagement_7d || 0);
+  const displayLikes = (isYouTube && realtimeData) ? (realtimeData.likes_7d || 0) : (latestMetric?.likes_7d || 0);
+  const displayDislikes = (isYouTube && realtimeData) ? (realtimeData.dislikes_7d || 0) : (latestMetric?.dislikes_7d || 0);
 
   return (
     <div className="space-y-16">
@@ -1246,25 +1306,25 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
         <div className="glass-card p-8 border-white/5">
           <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Reach (Last 7D)</h3>
-          <p className="text-4xl font-serif font-medium gold-text-gradient">{(latestMetric?.reach_7d || 0).toLocaleString()}</p>
-          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {(latestMetric?.reach_7d ? Math.round(latestMetric.reach_7d / 7) : 0).toLocaleString()}</p>
+          <p className="text-4xl font-serif font-medium gold-text-gradient">{displayReach7d.toLocaleString()}</p>
+          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {Math.round(displayReach7d / 7).toLocaleString()}</p>
         </div>
         <div className="glass-card p-8 border-white/5">
           <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Engagement (Last 7D)</h3>
-          <p className="text-4xl font-serif font-medium text-white">{(latestMetric?.engagement_7d || 0).toLocaleString()}</p>
-          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {(latestMetric?.engagement_7d ? Math.round(latestMetric.engagement_7d / 7) : 0).toLocaleString()}</p>
+          <p className="text-4xl font-serif font-medium text-white">{displayEngagement7d.toLocaleString()}</p>
+          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {Math.round(displayEngagement7d / 7).toLocaleString()}</p>
         </div>
         {isYouTube && (
           <div className="glass-card p-8 border-white/5">
             <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">YouTube Sentiment</h3>
             <div className="flex items-end gap-4">
               <div>
-                <p className="text-2xl font-serif font-medium text-emerald-400">{(latestMetric?.likes_7d || 0).toLocaleString()}</p>
+                <p className="text-2xl font-serif font-medium text-emerald-400">{displayLikes.toLocaleString()}</p>
                 <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
               </div>
               <div className="h-8 w-[1px] bg-white/10 mb-1" />
               <div>
-                <p className="text-2xl font-serif font-medium text-rose-400">{(latestMetric?.dislikes_7d || 0).toLocaleString()}</p>
+                <p className="text-2xl font-serif font-medium text-rose-400">{displayDislikes.toLocaleString()}</p>
                 <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Dislikes</p>
               </div>
             </div>
@@ -1370,6 +1430,54 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
           </div>
         </div>
       </div>
+
+      {isYouTube && realtimeData?.recentVideos && (
+        <div className="space-y-8">
+          <div className="flex items-center justify-between">
+            <h3 className="text-2xl font-serif font-medium">Recent Video Performance</h3>
+            <button 
+              onClick={fetchRealtime}
+              disabled={isFetching}
+              className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-brand-primary transition-colors"
+            >
+              <RefreshCw className={cn("w-3 h-3", isFetching && "animate-spin")} />
+              {isFetching ? 'Fetching...' : 'Refresh Realtime'}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {realtimeData.recentVideos.map((video: any) => (
+              <div key={video.id} className="glass-card overflow-hidden border-white/5 group hover:border-brand-primary/20 transition-all">
+                <div className="aspect-video relative overflow-hidden">
+                  <img 
+                    src={video.thumbnail} 
+                    alt={video.title} 
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                  <div className="absolute bottom-4 left-4 right-4">
+                    <p className="text-xs font-serif italic text-white line-clamp-2">{video.title}</p>
+                  </div>
+                </div>
+                <div className="p-6 grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <p className="text-lg font-serif font-medium text-white">{video.views.toLocaleString()}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Views</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-serif font-medium text-emerald-400">{video.likes.toLocaleString()}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-serif font-medium text-rose-400">{video.dislikes.toLocaleString()}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Dislikes</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

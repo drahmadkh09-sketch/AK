@@ -89,6 +89,10 @@ export const api = {
     const data = await handleResponse(res, 'Failed to fetch metrics');
     return Array.isArray(data) ? data : [];
   },
+  getRealtimeMetrics: async (accountId: number): Promise<any> => {
+    const res = await fetch(`${API_BASE}/accounts/${accountId}/realtime-metrics`, { headers: getHeaders() });
+    return handleResponse(res, 'Failed to fetch realtime metrics');
+  },
   addMetric: async (metric: Partial<Metric>): Promise<void> => {
     const res = await fetch(`${API_BASE}/metrics`, {
       method: 'POST',

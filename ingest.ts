@@ -117,13 +117,16 @@ export async function ingest(db: any = dbInstance) {
       }
 
       if (metrics) {
+        console.log(`Metrics for ${acc.handle}:`, JSON.stringify(metrics));
         // Calculate follower delta if we have a previous total_followers
         const prevMetric = db.prepare("SELECT total_followers FROM account_metrics WHERE account_id = ? ORDER BY timestamp DESC LIMIT 1").get(acc.id);
         if (prevMetric && (prevMetric as any).total_followers && metrics.total_followers) {
           metrics.follower_delta_7d = metrics.total_followers - (prevMetric as any).total_followers;
+          console.log(`Calculated follower delta for ${acc.handle}: ${metrics.follower_delta_7d}`);
         }
 
         // Insert into account_metrics
+        console.log(`Inserting metrics into database for ${acc.handle}...`);
         db.prepare(`
           INSERT INTO account_metrics (account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, total_followers, likes_7d, dislikes_7d)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -133,6 +136,9 @@ export async function ingest(db: any = dbInstance) {
         if (metrics.posts_per_day_7d > 0) {
           db.prepare("UPDATE accounts SET last_post_ts = CURRENT_TIMESTAMP WHERE id = ?").run(acc.id);
         }
+        console.log(`Successfully updated metrics for ${acc.handle}`);
+      } else {
+        console.warn(`No metrics generated for ${acc.handle}`);
       }
       
       // Check for alerts

@@ -4,6 +4,7 @@ import path from "path";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
 import { ingest } from "./ingest";
+import { fetchYouTubeMetrics, fetchMetaMetrics } from "./src/services/socialApi";
 
 import multer from "multer";
 import { parse } from "csv-parse/sync";
@@ -35,6 +36,44 @@ async function runIngestion() {
     console.error("Ingestion failed:", error);
     ingestionStatus.status = "error";
     ingestionStatus.error = error.message || "Unknown error";
+  }
+}
+
+async function checkCadenceGaps() {
+  console.log("Checking for cadence gaps...");
+  try {
+    const thresholdsSetting = db.prepare("SELECT value FROM settings WHERE key = 'thresholds'").get() as any;
+    const thresholds = thresholdsSetting ? JSON.parse(thresholdsSetting.value) : { cadence_gap_hours: 48 };
+    const gapHours = thresholds.cadence_gap_hours || 48;
+
+    const accounts = db.prepare("SELECT * FROM accounts WHERE status_tag = 'active'").all() as any[];
+    const now = new Date();
+
+    for (const account of accounts) {
+      if (!account.last_post_ts) continue;
+
+      const lastPost = new Date(account.last_post_ts);
+      const diffHours = (now.getTime() - lastPost.getTime()) / (1000 * 60 * 60);
+
+      if (diffHours > gapHours) {
+        // Check if a pending alert already exists for this account and this gap
+        const existingAlert = db.prepare(`
+          SELECT id FROM alerts 
+          WHERE account_id = ? AND type = 'cadence_gap' AND status = 'pending'
+        `).get(account.id);
+
+        if (!existingAlert) {
+          const message = `Cadence gap detected for @${account.handle} on ${account.platform}. Last post was ${Math.floor(diffHours)} hours ago (Threshold: ${gapHours}h).`;
+          db.prepare(`
+            INSERT INTO alerts (account_id, type, message, severity, status)
+            VALUES (?, 'cadence_gap', ?, 'high', 'pending')
+          `).run(account.id, message);
+          console.log(`Alert created for @${account.handle}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Cadence check failed:", error);
   }
 }
 
@@ -226,12 +265,12 @@ async function startServer() {
     if (!(req as any).file) return res.status(400).json({ error: "No file uploaded" });
     const records = parse((req as any).file.buffer, { columns: true, skip_empty_lines: true });
     const stmt = db.prepare(`
-      INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO accounts (platform, handle, platform_account_id, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMany = db.transaction((rows) => {
       for (const row of rows) {
-        stmt.run(row.platform, row.handle, row.profile_url, row.pod_owner, row.backup_owner, row.status_tag || 'active', row.cadence_target_per_week || 1, row.priority_level || 'medium');
+        stmt.run(row.platform, row.handle, row.platform_account_id || null, row.profile_url, row.pod_owner, row.backup_owner, row.status_tag || 'active', row.cadence_target_per_week || 1, row.priority_level || 'medium');
       }
     });
     insertMany(records);
@@ -239,19 +278,29 @@ async function startServer() {
   });
 
   apiRouter.post("/accounts", (req, res) => {
-    const { platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week } = req.body;
+    const { platform, handle, platform_account_id, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week } = req.body;
     const info = db.prepare(`
-      INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week);
+      INSERT INTO accounts (platform, handle, platform_account_id, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(platform, handle, platform_account_id, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week);
     res.json({ id: info.lastInsertRowid });
   });
 
   apiRouter.patch("/accounts/:id", (req, res) => {
     const { id } = req.params;
-    const { status_tag, last_post_ts } = req.body;
-    if (status_tag) db.prepare("UPDATE accounts SET status_tag = ? WHERE id = ?").run(status_tag, id);
-    if (last_post_ts) db.prepare("UPDATE accounts SET last_post_ts = ? WHERE id = ?").run(last_post_ts, id);
+    const { status_tag, last_post_ts, platform_account_id, platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week } = req.body;
+    
+    if (status_tag !== undefined) db.prepare("UPDATE accounts SET status_tag = ? WHERE id = ?").run(status_tag, id);
+    if (last_post_ts !== undefined) db.prepare("UPDATE accounts SET last_post_ts = ? WHERE id = ?").run(last_post_ts, id);
+    if (platform_account_id !== undefined) db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platform_account_id, id);
+    if (platform !== undefined) db.prepare("UPDATE accounts SET platform = ? WHERE id = ?").run(platform, id);
+    if (handle !== undefined) db.prepare("UPDATE accounts SET handle = ? WHERE id = ?").run(handle, id);
+    if (profile_url !== undefined) db.prepare("UPDATE accounts SET profile_url = ? WHERE id = ?").run(profile_url, id);
+    if (pod_owner !== undefined) db.prepare("UPDATE accounts SET pod_owner = ? WHERE id = ?").run(pod_owner, id);
+    if (backup_owner !== undefined) db.prepare("UPDATE accounts SET backup_owner = ? WHERE id = ?").run(backup_owner, id);
+    if (priority_level !== undefined) db.prepare("UPDATE accounts SET priority_level = ? WHERE id = ?").run(priority_level, id);
+    if (cadence_target_per_week !== undefined) db.prepare("UPDATE accounts SET cadence_target_per_week = ? WHERE id = ?").run(cadence_target_per_week, id);
+    
     res.json({ success: true });
   });
 
@@ -463,6 +512,25 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  apiRouter.get("/accounts/:id/realtime-metrics", async (req, res) => {
+    const { id } = req.params;
+    const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as any;
+    if (!account) return res.status(404).json({ error: "Account not found" });
+
+    let metrics = null;
+    try {
+      if (account.platform === 'YouTube' && account.platform_account_id) {
+        metrics = await fetchYouTubeMetrics(account.platform_account_id);
+      } else if (account.platform === 'Instagram' && account.platform_account_id) {
+        metrics = await fetchMetaMetrics(account.platform_account_id);
+      }
+      res.json(metrics);
+    } catch (error) {
+      console.error("Realtime metrics error:", error);
+      res.status(500).json({ error: "Failed to fetch realtime metrics" });
+    }
+  });
+
   // Ingestion Control
   apiRouter.get("/ingest/status", (req, res) => {
     res.json(ingestionStatus);
@@ -495,15 +563,21 @@ async function startServer() {
 
   // --- Background Tasks ---
 
-  // Real Metrics Ingestion
-  setInterval(() => {
-    runIngestion();
-  }, 1000 * 60 * 60); // Run every hour
-
   // Initial run on startup
   setTimeout(() => {
     runIngestion();
+    checkCadenceGaps();
   }, 5000);
+
+  // Run every 6 hours
+  setInterval(() => {
+    runIngestion();
+  }, 6 * 60 * 60 * 1000);
+
+  // Check cadence every hour
+  setInterval(() => {
+    checkCadenceGaps();
+  }, 60 * 60 * 1000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
