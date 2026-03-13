@@ -4,37 +4,85 @@ import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { fetchMetaMetrics, fetchYouTubeMetrics, SocialMetrics } from "./src/services/socialApi";
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const dbInstance = new Database("dashboard.db");
 
 export async function generateWithFallback(prompt: string) {
-  const models = ["gemini-3-flash-preview", "gemini-2.5-flash-preview"];
-  const apiKeys = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_1_5];
+  const models = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash-preview"];
+  
+  // Try to find a valid-looking API key
+  const apiKeys = [
+    process.env.GEMINI_API_KEY, 
+    process.env.API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.GEMINI_API_KEY_1_5
+  ].filter(key => {
+    if (!key) return false;
+    const s = String(key).trim();
+    
+    // 1. Check for common placeholder strings
+    const placeholders = [
+      "your_", "todo", "key_here", "placeholder", "undefined", "null", 
+      "my_gemini", "my_google", "api_key", "insert_here", "my_g"
+    ];
+    const isPlaceholder = placeholders.some(p => s.toLowerCase().includes(p));
+    
+    // 2. Check for environment variable names being used as values
+    const isEnvName = s === "GEMINI_API_KEY" || s === "API_KEY" || s === "GOOGLE_API_KEY" || s === "GEMINI_API_KEY_1_5";
+    
+    // 3. Real Gemini/Google API keys almost always start with 'AIza'
+    const hasCorrectPrefix = s.startsWith("AIza");
+    
+    // 4. Check for keys that are just generic "KEY" or "MY_KEY" or contain dots from masking
+    const isGenericKey = (s.toLowerCase().endsWith("_key") && s.length < 25) || s.includes("...");
+    
+    // A valid key must be long enough, not be a placeholder, and ideally have the correct prefix
+    return s.length > 15 && !isPlaceholder && !isEnvName && !isGenericKey && (hasCorrectPrefix || s.length > 30);
+  }) as string[];
 
-  for (let i = 0; i < models.length; i++) {
-    const apiKey = apiKeys[i] || apiKeys[0];
-    const model = models[i];
-    if (!apiKey) continue;
+  if (apiKeys.length === 0) {
+    console.error("No valid Gemini API key found. Checked: GEMINI_API_KEY, API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY_1_5");
+    throw new Error("No valid Gemini API key found in environment variables. Please set GEMINI_API_KEY in Settings.");
+  }
 
-    const ai = new GoogleGenAI({ apiKey });
-    try {
-      const response = await ai.models.generateContent({
-        model: model,
-        contents: prompt,
-        config: { responseMimeType: "application/json" }
-      });
-      return response.text;
-    } catch (error: any) {
-      const errorMsg = error.message?.toLowerCase() || "";
-      if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("exhausted")) {
-        console.warn(`Quota exceeded for ${model}, trying next...`);
-        continue;
+  let lastError: any = null;
+
+  for (const apiKey of apiKeys) {
+    const maskedKey = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
+    for (const model of models) {
+      console.log(`Attempting generation with model ${model} using key ${maskedKey}...`);
+      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+      try {
+        const response = await ai.models.generateContent({
+          model: model,
+          contents: prompt,
+          config: { responseMimeType: "application/json" }
+        });
+        
+        if (response && response.text) {
+          return response.text;
+        }
+      } catch (error: any) {
+        lastError = error;
+        const errorMsg = error.message?.toLowerCase() || "";
+        
+        if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("exhausted")) {
+          console.warn(`Quota exceeded for ${model} with key ${maskedKey}, trying next...`);
+          continue;
+        }
+        
+        if (errorMsg.includes("400") || errorMsg.includes("invalid") || errorMsg.includes("not found")) {
+          console.warn(`Key ${maskedKey} or model ${model} is invalid: ${error.message}`);
+          continue;
+        }
+        
+        console.error(`Unexpected error with model ${model}:`, error.message);
       }
-      throw error;
     }
   }
-  throw new Error("All models failed or quota exceeded for all.");
+  
+  throw lastError || new Error("All models and keys failed.");
 }
 
 async function sendNotification(db: any, message: string, severity: string) {

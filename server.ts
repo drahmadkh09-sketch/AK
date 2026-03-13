@@ -10,7 +10,7 @@ import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { Parser } from "json2csv";
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const db = new Database("dashboard.db");
 const upload = multer({ storage: multer.memoryStorage() });
