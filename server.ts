@@ -205,7 +205,19 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_destinations', '{"email": "admin@example.com", "slack": "", "whatsapp": ""}');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('thresholds', '{"reach_drop": 20, "cadence_gap_hours": 48}');
 
-  -- Seed initial accounts if empty
+  // Update API keys if provided in env
+  const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+  let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
+  let updated = false;
+  if (process.env.META_ACCESS_TOKEN && !keys.meta) { keys.meta = process.env.META_ACCESS_TOKEN; updated = true; }
+  if (process.env.YOUTUBE_API_KEY && !keys.youtube) { keys.youtube = process.env.YOUTUBE_API_KEY; updated = true; }
+  if (process.env.GEMINI_API_KEY && !keys.gemini) { keys.gemini = process.env.GEMINI_API_KEY; updated = true; }
+  
+  if (updated) {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('api_keys', ?)").run(JSON.stringify(keys));
+  }
+
+  // Seed initial accounts if empty
   INSERT OR IGNORE INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
   SELECT 'Instagram', 'dr_ray', 'https://instagram.com/dr_ray', 'Pod A', 'Backup A', 'active', 3, 'high'
   WHERE NOT EXISTS (SELECT 1 FROM accounts);
@@ -452,12 +464,8 @@ async function startServer() {
   });
 
   apiRouter.get("/external-assets", (req, res) => {
-    // Mock Drive/Dropbox listing
-    res.json([
-      { id: '1', title: 'Promo Video - Dr Ray', type: 'Video', url: 'https://example.com/v1', thumbnail_url: 'https://picsum.photos/seed/v1/200/200' },
-      { id: '2', title: 'Deacon Harold Interview', type: 'Video', url: 'https://example.com/v2', thumbnail_url: 'https://picsum.photos/seed/v2/200/200' },
-      { id: '3', title: 'Fr Mike Homily', type: 'Video', url: 'https://example.com/v3', thumbnail_url: 'https://picsum.photos/seed/v3/200/200' },
-    ]);
+    // Return empty list as real integration is not configured
+    res.json([]);
   });
 
   apiRouter.post("/ready-assets", (req, res) => {
@@ -609,6 +617,7 @@ async function startServer() {
     if (metaToken) {
       try {
         const id = await getInstagramBusinessIdFromToken(metaToken);
+        console.log("Meta Token Health Check ID:", id);
         if (!id) {
           status.meta_expired = true;
           // Clear from DB if it's there and invalid

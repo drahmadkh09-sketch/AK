@@ -158,7 +158,13 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
     accounts = db.prepare("SELECT * FROM accounts WHERE status_tag = 'active'").all();
   }
   const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
-  const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+  const dbKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+  
+  const apiKeys = {
+    meta: dbKeys.meta || process.env.META_ACCESS_TOKEN,
+    youtube: dbKeys.youtube || process.env.YOUTUBE_API_KEY,
+    gemini: dbKeys.gemini || process.env.GEMINI_API_KEY
+  };
   
   for (const acc of accounts as any) {
     console.log(`Ingesting data for ${acc.handle} (${acc.platform})...`);
@@ -205,7 +211,7 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
         }
       }
 
-      // 2. Fallback to Gemini if real API fails or is not configured
+      // 2. No fallback - only real data allowed
       if (!metrics) {
         let reason = "Unknown failure";
         if (!platformAccountId) reason = "Missing Platform ID";
@@ -213,27 +219,8 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
         else if ((acc.platform === 'Instagram' || acc.platform === 'Facebook') && !apiKeys.meta) reason = "Missing Meta Access Token";
         else reason = "Real API pull failed (check key validity)";
 
-        console.log(`Ingest: ${reason} for ${acc.handle}, falling back to Gemini...`);
-        const prompt = `Provide realistic 7-day social media metrics for the account ${acc.handle} on ${acc.platform}. 
-        Return ONLY a JSON object with these fields: posts_per_day_7d (float), avg_reach_7d (int), saves_7d (int), shares_7d (int), watch_time_7d (int), follower_delta_7d (int).
-        Base it on the typical performance of such an account if you recognize it, otherwise provide realistic industry averages for that platform.`;
-        
-        const responseText = await generateWithFallback(prompt, apiKeys.gemini);
-        if (responseText) {
-          metrics = JSON.parse(responseText);
-        } else {
-          // Absolute static fallback if even Gemini fails
-          metrics = {
-            posts_per_day_7d: 0.5 + Math.random(),
-            avg_reach_7d: 500 + Math.floor(Math.random() * 1000),
-            saves_7d: 10 + Math.floor(Math.random() * 50),
-            shares_7d: 5 + Math.floor(Math.random() * 30),
-            watch_time_7d: 1000 + Math.floor(Math.random() * 5000),
-            follower_delta_7d: 5 + Math.floor(Math.random() * 20),
-            total_followers: 1000 + Math.floor(Math.random() * 5000)
-          };
-          console.log(`Using absolute static fallback for ${acc.handle}`);
-        }
+        console.warn(`Ingest: ${reason} for ${acc.handle}. Skipping update to ensure data integrity (no mock data allowed).`);
+        continue; 
       }
 
       if (metrics) {
