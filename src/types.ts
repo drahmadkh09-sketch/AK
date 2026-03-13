@@ -14,13 +14,49 @@ export interface Account {
 export interface Metric {
   id: number;
   account_id: number;
-  date: string;
-  posts_count: number;
-  reach: number;
-  saves: number;
-  shares: number;
-  watch_time: number;
-  follower_delta: number;
+  timestamp: string;
+  posts_per_day_7d: number;
+  avg_reach_7d: number;
+  saves_7d: number;
+  shares_7d: number;
+  watch_time_7d: number;
+  follower_delta_7d: number;
+  likes_7d?: number;
+  dislikes_7d?: number;
+}
+
+export interface Alert {
+  id: number;
+  account_id: number;
+  type: 'cadence_gap' | 'metric_drop' | 'threshold_breach';
+  message: string;
+  severity: 'high' | 'medium' | 'low';
+  status: 'pending' | 'resolved' | 'ignored';
+  created_at: string;
+  handle?: string;
+  platform?: string;
+}
+
+export interface ScheduledPost {
+  id: number;
+  account_id: number;
+  platform: string;
+  content_type: string;
+  scheduled_time: string;
+  status: 'scheduled' | 'deployed' | 'failed';
+  caption: string;
+  asset_url: string;
+  handle?: string;
+}
+
+export interface ReadyAsset {
+  id: number;
+  title: string;
+  type: string;
+  url: string;
+  thumbnail_url: string;
+  status: 'ready' | 'used' | 'archived';
+  created_at: string;
 }
 
 export interface AuditLog {

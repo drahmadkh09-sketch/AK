@@ -19,7 +19,10 @@ import {
   MessageSquare,
   Send,
   X,
-  Download
+  Download,
+  Upload,
+  RefreshCw,
+  Library
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -40,7 +43,7 @@ import {
 } from 'recharts';
 import { format, formatDistanceToNow, isAfter, subHours, startOfWeek, endOfWeek, eachDayOfInterval, subDays } from 'date-fns';
 import { api } from './api';
-import { Account, Metric, AuditLog, Insight, Settings } from './types';
+import { Account, Metric, AuditLog, Insight, Settings, Alert, ScheduledPost, ReadyAsset } from './types';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -70,15 +73,27 @@ function Logo({ className = "w-10 h-10" }: { className?: string }) {
 function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === 'NIO2026') {
-      localStorage.setItem('nio_auth', 'true');
-      onLogin();
-    } else {
+    setIsVerifying(true);
+    try {
+      const isValid = await api.verifyToken(password);
+      if (isValid) {
+        localStorage.setItem('nio_auth', 'true');
+        localStorage.setItem('nio_token', password);
+        onLogin();
+      } else {
+        setError(true);
+        setTimeout(() => setError(false), 2000);
+      }
+    } catch (err) {
+      console.error('Verification failed', err);
       setError(true);
       setTimeout(() => setError(false), 2000);
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -110,9 +125,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
           </div>
           <button 
             type="submit"
-            className="w-full py-5 bg-brand-primary text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.4em] hover:bg-brand-primary/90 transition-all shadow-2xl shadow-brand-primary/20"
+            disabled={isVerifying}
+            className={cn(
+              "w-full py-5 bg-brand-primary text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.4em] hover:bg-brand-primary/90 transition-all shadow-2xl shadow-brand-primary/20",
+              isVerifying && "opacity-50 cursor-not-allowed"
+            )}
           >
-            Initialize
+            {isVerifying ? 'Verifying...' : 'Initialize'}
           </button>
         </form>
       </motion.div>
@@ -122,33 +141,89 @@ function Login({ onLogin }: { onLogin: () => void }) {
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(localStorage.getItem('nio_auth') === 'true');
-  const [showHero, setShowHero] = useState(true);
+  const [showHero, setShowHero] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'metrics' | 'audit' | 'insights' | 'settings'>('overview');
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
+  const [readyAssets, setReadyAssets] = useState<ReadyAsset[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ingestionStatus, setIngestionStatus] = useState<{ status: string; lastRun: string | null; error: string | null }>({
+    status: 'idle',
+    lastRun: null,
+    error: null
+  });
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (isAuthenticated) {
+      fetchData();
+      fetchIngestionStatus();
+      const interval = setInterval(fetchIngestionStatus, 10000); // Poll every 10s
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated]);
+
+  const fetchIngestionStatus = async () => {
+    try {
+      const status = await api.getIngestionStatus();
+      setIngestionStatus(prev => {
+        // Show toast if status changed to success or error
+        if (status.status === 'success' && prev.status === 'running') {
+          setToast({ message: 'Data ingestion completed successfully', type: 'success' });
+          setTimeout(() => setToast(null), 5000);
+          fetchData(); // Refresh data
+        } else if (status.status === 'error' && prev.status === 'running') {
+          setToast({ message: `Ingestion failed: ${status.error}`, type: 'error' });
+          setTimeout(() => setToast(null), 5000);
+        }
+        return status;
+      });
+    } catch (error) {
+      console.error('Failed to fetch ingestion status', error);
+    }
+  };
+
+  const handleTriggerIngestion = async () => {
+    try {
+      await api.triggerIngestion();
+      setIngestionStatus(prev => ({ ...prev, status: 'running' }));
+      setToast({ message: 'Data ingestion triggered', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+    } catch (error: any) {
+      setToast({ message: error.message || 'Failed to trigger ingestion', type: 'error' });
+      setTimeout(() => setToast(null), 5000);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [accs, logs, ins, sets] = await Promise.all([
+      const [accs, logs, ins, sets, alrts, posts, assets] = await Promise.all([
         api.getAccounts(),
         api.getAuditLogs(),
         api.getInsights(),
-        api.getSettings()
+        api.getSettings(),
+        api.getAlerts(),
+        api.getScheduledPosts(),
+        api.getReadyAssets()
       ]);
       setAccounts(accs);
       setAuditLogs(logs);
       setInsights(ins);
       setSettings(sets);
-    } catch (error) {
+      setAlerts(alrts);
+      setScheduledPosts(posts);
+      setReadyAssets(assets);
+    } catch (error: any) {
       console.error('Failed to fetch data', error);
+      if (error.message === 'Unauthorized') {
+        localStorage.removeItem('nio_auth');
+        setIsAuthenticated(false);
+      }
     } finally {
       setLoading(false);
     }
@@ -156,13 +231,14 @@ export default function App() {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'overview': return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} />;
+      case 'overview': return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} alerts={alerts} scheduledPosts={scheduledPosts} readyAssets={readyAssets} onUpdate={fetchData} onNavigate={setActiveTab} />;
       case 'accounts': return <AccountRegistry accounts={accounts} onUpdate={fetchData} />;
       case 'metrics': return <MetricsView accounts={accounts} />;
       case 'audit': return <AuditLogInterface accounts={accounts} auditLogs={auditLogs} onUpdate={fetchData} />;
       case 'insights': return <InsightsFeed insights={insights} accounts={accounts} onUpdate={fetchData} />;
       case 'settings': return <SettingsPanel settings={settings} onUpdate={fetchData} />;
-      default: return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} />;
+      case 'library': return <AssetLibrary readyAssets={readyAssets} onUpdate={fetchData} />;
+      default: return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} alerts={alerts} scheduledPosts={scheduledPosts} readyAssets={readyAssets} onUpdate={fetchData} onNavigate={setActiveTab} />;
     }
   };
 
@@ -199,9 +275,14 @@ export default function App() {
                 <SidebarItem icon={Users} label="Accounts" active={activeTab === 'accounts'} onClick={() => setActiveTab('accounts')} />
                 <SidebarItem icon={BarChart3} label="Metrics" active={activeTab === 'metrics'} onClick={() => setActiveTab('metrics')} />
                 <SidebarItem icon={ClipboardCheck} label="Audit Logs" active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} />
+                <SidebarItem icon={Library} label="Library" active={activeTab === 'library'} onClick={() => setActiveTab('library')} />
                 <SidebarItem icon={Lightbulb} label="Insights" active={activeTab === 'insights'} onClick={() => setActiveTab('insights')} />
                 <SidebarItem icon={SettingsIcon} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
               </nav>
+
+              <div className="px-6 py-4">
+                <IngestionStatusIndicator status={ingestionStatus} onTrigger={handleTriggerIngestion} />
+              </div>
 
               <div className="p-8 border-t border-white/5">
                 <div className="flex items-center gap-4 px-4 py-5 glass-card border-white/5 bg-white/[0.02]">
@@ -231,6 +312,24 @@ export default function App() {
                 </motion.div>
               </AnimatePresence>
             </main>
+
+            {/* Toast Notification */}
+            <AnimatePresence>
+              {toast && (
+                <motion.div
+                  initial={{ opacity: 0, y: 50, x: '-50%' }}
+                  animate={{ opacity: 1, y: 0, x: '-50%' }}
+                  exit={{ opacity: 0, y: 50, x: '-50%' }}
+                  className={cn(
+                    "fixed bottom-8 left-1/2 z-[100] px-6 py-3 rounded-xl border shadow-2xl flex items-center gap-3",
+                    toast.type === 'success' ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400" : "bg-red-500/20 border-red-500/30 text-red-400"
+                  )}
+                >
+                  {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+                  <span className="text-sm font-medium">{toast.message}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
@@ -242,69 +341,14 @@ function BackgroundAnimation() {
   return (
     <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
       {/* Noise Texture Overlay */}
-      <div className="absolute inset-0 opacity-[0.03] mix-blend-overlay pointer-events-none" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }} />
+      <div className="absolute inset-0 opacity-[0.02] mix-blend-overlay pointer-events-none" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }} />
 
-      {/* Moving Grid */}
-      <div className="absolute inset-0 opacity-[0.02] pointer-events-none" style={{ backgroundImage: 'linear-gradient(to right, white 1px, transparent 1px), linear-gradient(to bottom, white 1px, transparent 1px)', backgroundSize: '100px 100px' }} />
-      <motion.div 
-        animate={{ y: [0, 100] }}
-        transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-        className="absolute inset-0 opacity-[0.01] pointer-events-none" 
-        style={{ backgroundImage: 'linear-gradient(to bottom, transparent, white, transparent)', backgroundSize: '100% 200px', backgroundRepeat: 'no-repeat' }}
-      />
+      {/* Static Grid */}
+      <div className="absolute inset-0 opacity-[0.01] pointer-events-none" style={{ backgroundImage: 'linear-gradient(to right, white 1px, transparent 1px), linear-gradient(to bottom, white 1px, transparent 1px)', backgroundSize: '100px 100px' }} />
 
-      {/* Animated Mesh Gradients */}
-      <motion.div 
-        animate={{ 
-          x: [0, 100, -100, 0],
-          y: [0, -100, 100, 0],
-          scale: [1, 1.2, 0.8, 1]
-        }}
-        transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-        className="absolute top-[-20%] left-[-20%] w-[80%] h-[80%] bg-brand-primary/5 blur-[150px] rounded-full" 
-      />
-      <motion.div 
-        animate={{ 
-          x: [0, -120, 120, 0],
-          y: [0, 120, -120, 0],
-          scale: [1, 0.9, 1.1, 1]
-        }}
-        transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
-        className="absolute bottom-[-20%] right-[-20%] w-[70%] h-[70%] bg-emerald-500/5 blur-[150px] rounded-full" 
-      />
-      <motion.div 
-        animate={{ 
-          x: [0, 80, -80, 0],
-          y: [0, 80, -80, 0],
-          opacity: [0.1, 0.2, 0.1]
-        }}
-        transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-        className="absolute top-[30%] left-[30%] w-[40%] h-[40%] bg-blue-500/5 blur-[120px] rounded-full" 
-      />
-
-      {/* Floating Glass Shards (Subtle) */}
-      {[...Array(6)].map((_, i) => (
-        <motion.div
-          key={i}
-          initial={{ 
-            x: Math.random() * 100 + "%", 
-            y: Math.random() * 100 + "%",
-            rotate: Math.random() * 360,
-            opacity: 0.1
-          }}
-          animate={{ 
-            y: [null, "-=100", "+=100"],
-            rotate: [null, "+=45", "-=45"],
-            opacity: [0.1, 0.2, 0.1]
-          }}
-          transition={{ 
-            duration: 10 + Math.random() * 10, 
-            repeat: Infinity, 
-            ease: "easeInOut" 
-          }}
-          className="absolute w-32 h-32 border border-white/5 bg-white/[0.01] backdrop-blur-sm rounded-3xl"
-        />
-      ))}
+      {/* Simplified Mesh Gradients */}
+      <div className="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] bg-brand-primary/5 blur-[100px] rounded-full" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-emerald-500/5 blur-[100px] rounded-full" />
     </div>
   );
 }
@@ -421,13 +465,19 @@ function SidebarItem({ icon: Icon, label, active, onClick }: { icon: any, label:
 
 // --- Sub-components ---
 
-function Overview({ accounts, auditLogs, insights, settings }: { accounts: Account[], auditLogs: AuditLog[], insights: Insight[], settings: Settings | null }) {
-  const alerts = accounts.filter(a => {
-    if (!a.last_post_ts) return true;
-    const lastPost = new Date(a.last_post_ts);
-    const threshold = subHours(new Date(), settings?.thresholds.cadence_gap_hours || 48);
-    return isAfter(threshold, lastPost);
-  });
+function Overview({ accounts, auditLogs, insights, settings, alerts, scheduledPosts, readyAssets, onUpdate, onNavigate }: { 
+  accounts: Account[], 
+  auditLogs: AuditLog[], 
+  insights: Insight[], 
+  settings: Settings | null,
+  alerts: Alert[],
+  scheduledPosts: ScheduledPost[],
+  readyAssets: ReadyAsset[],
+  onUpdate: () => void,
+  onNavigate: (tab: string) => void
+}) {
+  const [hoveredAsset, setHoveredAsset] = useState<ReadyAsset | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   const platformData = Array.from(new Set(accounts.map(a => a.platform))).map(p => ({
     name: p,
@@ -436,8 +486,56 @@ function Overview({ accounts, auditLogs, insights, settings }: { accounts: Accou
 
   const COLORS = ['#D4AF37', '#10B981', '#3B82F6', '#F43F5E'];
 
+  const handleResolveAlert = async (id: number) => {
+    await api.resolveAlert(id);
+    onUpdate();
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    setMousePos({ x: e.clientX, y: e.clientY });
+  };
+
   return (
     <div className="space-y-16">
+      <AnimatePresence>
+        {hoveredAsset && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.8, y: 20 }}
+            style={{ 
+              position: 'fixed', 
+              left: mousePos.x + 20, 
+              top: mousePos.y - 200, 
+              zIndex: 100,
+              pointerEvents: 'none'
+            }}
+            className="w-64 aspect-[3/4] glass-card overflow-hidden border-white/20 shadow-[0_32px_64px_rgba(0,0,0,0.8)]"
+          >
+            {hoveredAsset.type.toLowerCase().includes('video') ? (
+              <video 
+                src={hoveredAsset.url} 
+                autoPlay 
+                muted 
+                loop 
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <img 
+                src={hoveredAsset.url} 
+                alt={hoveredAsset.title} 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            )}
+            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+              <p className="text-xs font-bold text-white">{hoveredAsset.title}</p>
+              <p className="text-[10px] text-white/60 uppercase tracking-widest">{hoveredAsset.type}</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Hero Section */}
       <section className="relative py-16 overflow-hidden">
         <motion.div 
@@ -550,15 +648,24 @@ function Overview({ accounts, auditLogs, insights, settings }: { accounts: Accou
                 <div key={a.id} className="group flex items-center justify-between p-6 bg-white/[0.02] rounded-[24px] border border-white/5 hover:bg-white/[0.04] transition-all">
                   <div className="flex items-center gap-5">
                     <div className="relative">
-                      <PlatformIcon platform={a.platform} className="w-12 h-12 p-3 bg-white/5 rounded-2xl shadow-sm" />
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 rounded-full animate-pulse shadow-lg shadow-rose-500/50" />
+                      <PlatformIcon platform={a.platform || ''} className="w-12 h-12 p-3 bg-white/5 rounded-2xl shadow-sm" />
+                      <div className={cn(
+                        "absolute -top-1 -right-1 w-3 h-3 rounded-full animate-pulse shadow-lg",
+                        a.severity === 'high' ? "bg-rose-500 shadow-rose-500/50" : "bg-amber-500 shadow-amber-500/50"
+                      )} />
                     </div>
                     <div>
                       <p className="text-lg font-bold text-white">@{a.handle}</p>
-                      <p className="text-xs text-rose-400 font-medium">Cadence Gap: 48h+ Inactivity</p>
+                      <p className={cn(
+                        "text-xs font-medium",
+                        a.severity === 'high' ? "text-rose-400" : "text-amber-400"
+                      )}>{a.message}</p>
                     </div>
                   </div>
-                  <button className="px-6 py-2 bg-rose-500/10 text-rose-400 text-[10px] font-black uppercase tracking-widest rounded-full border border-rose-500/20 hover:bg-rose-500 hover:text-white transition-all">
+                  <button 
+                    onClick={() => handleResolveAlert(a.id)}
+                    className="px-6 py-2 bg-white/5 text-white/40 text-[10px] font-black uppercase tracking-widest rounded-full border border-white/10 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all"
+                  >
                     Resolve
                   </button>
                 </div>
@@ -577,30 +684,29 @@ function Overview({ accounts, auditLogs, insights, settings }: { accounts: Accou
           </div>
           
           <div className="space-y-6">
-            <div className="p-6 bg-white/[0.02] rounded-[24px] border border-white/5 flex items-center justify-between group hover:bg-white/[0.04] transition-all">
-              <div className="flex items-center gap-5">
-                <div className="w-12 h-12 bg-brand-primary/10 rounded-2xl flex items-center justify-center">
-                  <Instagram className="w-6 h-6 text-brand-primary" />
-                </div>
-                <div>
-                  <p className="text-lg font-bold text-white">Instagram Carousel</p>
-                  <p className="text-xs text-white/40 font-medium">Scheduled: Today, 18:00</p>
-                </div>
+            {scheduledPosts.length === 0 ? (
+              <div className="py-12 text-center">
+                <p className="text-white/30 font-serif italic">No posts scheduled for the next cycle.</p>
               </div>
-              <span className="status-badge status-on-target">Ready</span>
-            </div>
-            <div className="p-6 bg-white/[0.02] rounded-[24px] border border-white/5 flex items-center justify-between group hover:bg-white/[0.04] transition-all">
-              <div className="flex items-center gap-5">
-                <div className="w-12 h-12 bg-amber-500/10 rounded-2xl flex items-center justify-center">
-                  <Twitter className="w-6 h-6 text-amber-500" />
+            ) : (
+              scheduledPosts.map(p => (
+                <div key={p.id} className="p-6 bg-white/[0.02] rounded-[24px] border border-white/5 flex items-center justify-between group hover:bg-white/[0.04] transition-all">
+                  <div className="flex items-center gap-5">
+                    <div className="w-12 h-12 bg-brand-primary/10 rounded-2xl flex items-center justify-center">
+                      <PlatformIcon platform={p.platform} className="w-6 h-6 text-brand-primary" />
+                    </div>
+                    <div>
+                      <p className="text-lg font-bold text-white">{p.content_type} - @{p.handle}</p>
+                      <p className="text-xs text-white/40 font-medium">Scheduled: {format(new Date(p.scheduled_time), 'MMM d, HH:mm')}</p>
+                    </div>
+                  </div>
+                  <span className={cn(
+                    "status-badge",
+                    p.status === 'scheduled' ? "status-on-target" : "bg-white/5 text-white/20 border-white/10"
+                  )}>{p.status}</span>
                 </div>
-                <div>
-                  <p className="text-lg font-bold text-white">Twitter Thread</p>
-                  <p className="text-xs text-white/40 font-medium">Status: Composition in progress</p>
-                </div>
-              </div>
-              <span className="status-badge bg-amber-500/10 text-amber-400 border-amber-500/20">Drafting</span>
-            </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -611,27 +717,44 @@ function Overview({ accounts, auditLogs, insights, settings }: { accounts: Accou
             <ClipboardCheck className="w-8 h-8 text-emerald-500" />
             Creative Assets
           </h3>
-          <button className="text-xs font-black uppercase tracking-[0.2em] text-brand-primary hover:underline">View Library</button>
+          <button 
+            onClick={() => onNavigate('library')}
+            className="text-xs font-black uppercase tracking-[0.2em] text-brand-primary hover:underline"
+          >
+            View Library
+          </button>
         </div>
         
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6">
-          {[1, 2, 3, 4, 5, 6].map(i => (
-            <div key={i} className="group relative aspect-[3/4] rounded-[24px] overflow-hidden bg-white/5 border border-white/10">
-              <img 
-                src={`https://picsum.photos/seed/asset${i}/600/800`} 
-                alt="Asset" 
-                className="w-full h-full object-cover transition-all duration-700 group-hover:scale-110 group-hover:rotate-1"
-                referrerPolicy="no-referrer"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-6">
-                <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Asset 0{i}</p>
-                <p className="text-xs font-bold text-white mb-4">High-Res Master</p>
-                <button className="w-full py-2 bg-white text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-xl">
-                  Inspect
-                </button>
-              </div>
+          {readyAssets.length === 0 ? (
+            <div className="col-span-full py-12 text-center">
+              <p className="text-white/30 font-serif italic">No assets ready for deployment.</p>
             </div>
-          ))}
+          ) : (
+            readyAssets.map(asset => (
+              <div 
+                key={asset.id} 
+                onMouseEnter={() => setHoveredAsset(asset)}
+                onMouseLeave={() => setHoveredAsset(null)}
+                onMouseMove={handleMouseMove}
+                className="group relative aspect-[3/4] rounded-[24px] overflow-hidden bg-white/5 border border-white/10 cursor-none"
+              >
+                <img 
+                  src={asset.thumbnail_url || asset.url} 
+                  alt={asset.title} 
+                  className="w-full h-full object-cover transition-all duration-700 group-hover:scale-110 group-hover:rotate-1"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-6">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">{asset.type}</p>
+                  <p className="text-xs font-bold text-white mb-4">{asset.title}</p>
+                  <button className="w-full py-2 bg-white text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-xl">
+                    Inspect
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
@@ -722,6 +845,31 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
     }
   };
 
+  const handleExportCSV = async () => {
+    try {
+      await api.exportAccounts();
+    } catch (error) {
+      console.error('Export failed', error);
+    }
+  };
+
+  const handleImportCSV = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e: any) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        await api.importAccounts(file);
+        onUpdate();
+      } catch (error) {
+        console.error('Import failed', error);
+      }
+    };
+    input.click();
+  };
+
   return (
     <div className="space-y-12">
       <div className="flex items-center justify-between">
@@ -731,33 +879,17 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
         </header>
         <div className="flex items-center gap-4">
           <button 
-            onClick={() => {
-              const input = document.createElement('input');
-              input.type = 'file';
-              input.accept = '.csv';
-              input.onchange = async (e: any) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                const text = await file.text();
-                const lines = text.split('\n').filter(l => l.trim());
-                const headers = lines[0].split(',').map(h => h.trim());
-                const data = lines.slice(1).map(line => {
-                  const values = line.split(',').map(v => v.trim());
-                  return headers.reduce((acc: any, header, i) => {
-                    acc[header] = values[i];
-                    return acc;
-                  }, {});
-                });
-                for (const item of data) {
-                  await api.createAccount(item);
-                }
-                onUpdate();
-              };
-              input.click();
-            }}
+            onClick={handleExportCSV}
             className="flex items-center gap-3 px-8 py-4 bg-white/5 text-white border border-white/10 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-white/10 transition-all shadow-xl"
           >
             <Download className="w-4 h-4" />
+            <span className="gold-text-gradient">Export CSV</span>
+          </button>
+          <button 
+            onClick={handleImportCSV}
+            className="flex items-center gap-3 px-8 py-4 bg-white/5 text-white border border-white/10 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-white/10 transition-all shadow-xl"
+          >
+            <Upload className="w-4 h-4" />
             <span className="gold-text-gradient">Upload CSV</span>
           </button>
           <button 
@@ -1081,8 +1213,16 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
     date: format(new Date(m.date), 'MMM dd'),
     reach: m.reach,
     engagement: m.saves + m.shares,
-    followers: m.follower_delta
+    followers: m.follower_delta,
+    reach7d: m.reach_7d,
+    engagement7d: m.engagement_7d,
+    likes: m.likes_7d || 0,
+    dislikes: m.dislikes_7d || 0
   })).reverse();
+
+  const latestMetric = metrics[0];
+  const selectedAccountData = accounts.find(a => a.id === selectedAccount);
+  const isYouTube = selectedAccountData?.platform === 'YouTube';
 
   return (
     <div className="space-y-16">
@@ -1103,18 +1243,34 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
         <div className="glass-card p-8 border-white/5">
-          <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Avg Reach (7D)</h3>
-          <p className="text-4xl font-serif font-medium gold-text-gradient">{(metrics.reduce((acc, m) => acc + m.reach, 0) / (metrics.length || 1)).toLocaleString()}</p>
-          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">+12.4% vs prev</p>
+          <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Reach (Last 7D)</h3>
+          <p className="text-4xl font-serif font-medium gold-text-gradient">{(latestMetric?.reach_7d || 0).toLocaleString()}</p>
+          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {(latestMetric?.reach_7d ? Math.round(latestMetric.reach_7d / 7) : 0).toLocaleString()}</p>
         </div>
         <div className="glass-card p-8 border-white/5">
-          <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Total Engagement</h3>
-          <p className="text-4xl font-serif font-medium text-white">{(metrics.reduce((acc, m) => acc + m.saves + m.shares, 0)).toLocaleString()}</p>
-          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">+5.2% vs prev</p>
+          <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Engagement (Last 7D)</h3>
+          <p className="text-4xl font-serif font-medium text-white">{(latestMetric?.engagement_7d || 0).toLocaleString()}</p>
+          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {(latestMetric?.engagement_7d ? Math.round(latestMetric.engagement_7d / 7) : 0).toLocaleString()}</p>
         </div>
-        <div className="glass-card p-8 bg-brand-primary text-black border-none flex items-center justify-between">
+        {isYouTube && (
+          <div className="glass-card p-8 border-white/5">
+            <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">YouTube Sentiment</h3>
+            <div className="flex items-end gap-4">
+              <div>
+                <p className="text-2xl font-serif font-medium text-emerald-400">{(latestMetric?.likes_7d || 0).toLocaleString()}</p>
+                <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
+              </div>
+              <div className="h-8 w-[1px] bg-white/10 mb-1" />
+              <div>
+                <p className="text-2xl font-serif font-medium text-rose-400">{(latestMetric?.dislikes_7d || 0).toLocaleString()}</p>
+                <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Dislikes</p>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className={cn("glass-card p-8 bg-brand-primary text-black border-none flex items-center justify-between", !isYouTube && "md:col-span-2")}>
           <div>
             <h3 className="text-[10px] font-black opacity-40 uppercase tracking-[0.3em] mb-2">System Health</h3>
             <p className="text-2xl font-serif font-medium">Optimal</p>
@@ -1125,7 +1281,7 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
         <div className="glass-card p-10 border-white/5">
-          <h3 className="text-2xl font-serif font-medium mb-10">Reach Trajectory</h3>
+          <h3 className="text-2xl font-serif font-medium mb-10">Reach Trajectory (7D Rolling)</h3>
           <div className="h-[400px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -1161,14 +1317,15 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
                   }} 
                   itemStyle={{ color: '#D4AF37' }}
                 />
-                <Area type="monotone" dataKey="reach" stroke="#D4AF37" strokeWidth={3} fillOpacity={1} fill="url(#colorReach)" />
+                <Area type="monotone" dataKey="reach7d" name="7D Reach" stroke="#D4AF37" strokeWidth={3} fillOpacity={1} fill="url(#colorReach)" />
+                <Area type="monotone" dataKey="reach" name="Daily Reach" stroke="#3B82F6" strokeWidth={1} fill="transparent" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="glass-card p-10 border-white/5">
-          <h3 className="text-2xl font-serif font-medium mb-10">Engagement Mix</h3>
+          <h3 className="text-2xl font-serif font-medium mb-10">{isYouTube ? 'YouTube Sentiment Mix' : 'Engagement Mix (7D Rolling)'}</h3>
           <div className="h-[400px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
@@ -1197,7 +1354,17 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
                     color: '#fff'
                   }} 
                 />
-                <Bar dataKey="engagement" fill="#10B981" radius={[4, 4, 0, 0]} />
+                {isYouTube ? (
+                  <>
+                    <Bar dataKey="likes" name="Likes" fill="#10B981" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="dislikes" name="Dislikes" fill="#F43F5E" radius={[4, 4, 0, 0]} />
+                  </>
+                ) : (
+                  <>
+                    <Bar dataKey="engagement7d" name="7D Engagement" fill="#10B981" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="engagement" name="Daily Engagement" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                  </>
+                )}
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -2252,5 +2419,133 @@ function StatCard({ label, value, subValue, icon: Icon, color, trend }: { label:
       </div>
       <p className="text-sm text-white/30 mt-6 font-serif italic">{subValue}</p>
     </motion.div>
+  );
+}
+
+function AssetLibrary({ readyAssets, onUpdate }: { readyAssets: any[], onUpdate: () => void }) {
+  const [externalAssets, setExternalAssets] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api.getExternalAssets().then(setExternalAssets);
+  }, []);
+
+  const handleUploadCSV = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e: any) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        setLoading(true);
+        await api.uploadReadyAssets(file);
+        onUpdate();
+      } catch (error) {
+        console.error('Upload failed', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    input.click();
+  };
+
+  return (
+    <div className="space-y-12">
+      <div className="flex items-center justify-between">
+        <header>
+          <h1 className="text-6xl font-serif font-light luxury-text-gradient mb-2">Asset Library</h1>
+          <p className="text-white/40 font-light tracking-wide">Centralized repository for high-fidelity creative assets.</p>
+        </header>
+        <button 
+          onClick={handleUploadCSV}
+          disabled={loading}
+          className="flex items-center gap-3 px-8 py-4 bg-brand-primary text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-brand-primary/90 transition-all shadow-2xl shadow-brand-primary/20"
+        >
+          <Upload className="w-4 h-4" />
+          {loading ? 'Uploading...' : 'Upload CSV'}
+        </button>
+      </div>
+
+      <div className="glass-card p-10 border-white/5">
+        <h3 className="text-2xl font-serif font-medium mb-8">Ready for Deployment</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6">
+          {readyAssets.map(asset => (
+            <div key={asset.id} className="group relative aspect-[3/4] rounded-[24px] overflow-hidden bg-white/5 border border-white/10">
+              <img 
+                src={asset.thumbnail_url || asset.url} 
+                alt={asset.title} 
+                className="w-full h-full object-cover transition-all duration-700 group-hover:scale-110"
+                referrerPolicy="no-referrer"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-6">
+                <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">{asset.type}</p>
+                <p className="text-xs font-bold text-white">{asset.title}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="glass-card p-10 border-white/5">
+        <h3 className="text-2xl font-serif font-medium mb-8">External Sources (Drive/Dropbox)</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6">
+          {externalAssets.map(asset => (
+            <div key={asset.id} className="group relative aspect-[3/4] rounded-[24px] overflow-hidden bg-white/5 border border-white/10 grayscale hover:grayscale-0 transition-all">
+              <img 
+                src={asset.thumbnail_url || asset.url} 
+                alt={asset.title} 
+                className="w-full h-full object-cover transition-all duration-700 group-hover:scale-110"
+                referrerPolicy="no-referrer"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex flex-col justify-end p-6">
+                <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">{asset.type}</p>
+                <p className="text-xs font-bold text-white mb-4">{asset.title}</p>
+                <button className="w-full py-2 bg-brand-primary text-black text-[10px] font-black uppercase tracking-widest rounded-xl">
+                  Import
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IngestionStatusIndicator({ status, onTrigger }: { status: { status: string; lastRun: string | null; error: string | null }; onTrigger: () => void }) {
+  return (
+    <div className="glass-card border-white/5 bg-white/[0.02] p-4 rounded-xl space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">Data Ingestion</span>
+        <div className={cn(
+          "w-2 h-2 rounded-full",
+          status.status === 'running' ? "bg-brand-primary animate-pulse" :
+          status.status === 'success' ? "bg-emerald-500" :
+          status.status === 'error' ? "bg-red-500" : "bg-white/20"
+        )} />
+      </div>
+      
+      <div className="space-y-1">
+        <p className="text-xs font-bold text-white/80 capitalize">{status.status}</p>
+        {status.lastRun && (
+          <p className="text-[10px] text-white/40">
+            Last run: {new Date(status.lastRun).toLocaleTimeString()}
+          </p>
+        )}
+      </div>
+
+      <button
+        onClick={onTrigger}
+        disabled={status.status === 'running'}
+        className={cn(
+          "w-full py-2 rounded-lg text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2",
+          status.status === 'running' ? "bg-white/5 text-white/20 cursor-not-allowed" : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
+        )}
+      >
+        <RefreshCw className={cn("w-3 h-3", status.status === 'running' && "animate-spin")} />
+        Sync Now
+      </button>
+    </div>
   );
 }

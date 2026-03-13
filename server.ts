@@ -3,10 +3,51 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
+import { ingest } from "./ingest";
+
+import multer from "multer";
+import { parse } from "csv-parse/sync";
+import { Parser } from "json2csv";
 
 dotenv.config();
 
 const db = new Database("dashboard.db");
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Ingestion Status Tracking
+let ingestionStatus = {
+  status: "idle", // "idle", "running", "success", "error"
+  lastRun: null as string | null,
+  error: null as string | null
+};
+
+async function runIngestion() {
+  if (ingestionStatus.status === "running") return;
+  
+  ingestionStatus.status = "running";
+  ingestionStatus.error = null;
+  
+  try {
+    await ingest(db);
+    ingestionStatus.status = "success";
+    ingestionStatus.lastRun = new Date().toISOString();
+  } catch (error: any) {
+    console.error("Ingestion failed:", error);
+    ingestionStatus.status = "error";
+    ingestionStatus.error = error.message || "Unknown error";
+  }
+}
+
+// Auth Middleware
+const AUTH_TOKEN = process.env.SHARED_AUTH_TOKEN || "NIO2026";
+const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const token = req.headers["authorization"] || req.query.token;
+  if (token === AUTH_TOKEN || token === `Bearer ${AUTH_TOKEN}`) {
+    next();
+  } else {
+    res.status(401).json({ error: "Unauthorized" });
+  }
+};
 
 // Initialize Database
 db.exec(`
@@ -14,6 +55,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
     handle TEXT NOT NULL,
+    platform_account_id TEXT, -- ID for Meta/YouTube API
     profile_url TEXT,
     pod_owner TEXT,
     backup_owner TEXT,
@@ -23,17 +65,51 @@ db.exec(`
     priority_level TEXT DEFAULT 'medium'
   );
 
-  CREATE TABLE IF NOT EXISTS metrics (
+  CREATE TABLE IF NOT EXISTS account_metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER,
-    date DATE DEFAULT CURRENT_DATE,
-    posts_count INTEGER DEFAULT 0,
-    reach INTEGER DEFAULT 0,
-    saves INTEGER DEFAULT 0,
-    shares INTEGER DEFAULT 0,
-    watch_time INTEGER DEFAULT 0,
-    follower_delta INTEGER DEFAULT 0,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    posts_per_day_7d REAL,
+    avg_reach_7d INTEGER,
+    saves_7d INTEGER,
+    shares_7d INTEGER,
+    watch_time_7d INTEGER,
+    follower_delta_7d INTEGER,
+    total_followers INTEGER,
     FOREIGN KEY(account_id) REFERENCES accounts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER,
+    type TEXT NOT NULL, -- 'cadence_gap', 'metric_drop', 'threshold_breach'
+    message TEXT NOT NULL,
+    severity TEXT DEFAULT 'medium',
+    status TEXT DEFAULT 'pending', -- 'pending', 'resolved', 'ignored'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(account_id) REFERENCES accounts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS scheduled_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER,
+    platform TEXT NOT NULL,
+    content_type TEXT, -- 'Reel', 'Post', 'Story', 'Short'
+    scheduled_time DATETIME NOT NULL,
+    status TEXT DEFAULT 'scheduled', -- 'scheduled', 'deployed', 'failed'
+    caption TEXT,
+    asset_url TEXT,
+    FOREIGN KEY(account_id) REFERENCES accounts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS ready_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    type TEXT, -- 'Video', 'Image', 'Graphic'
+    url TEXT NOT NULL,
+    thumbnail_url TEXT,
+    status TEXT DEFAULT 'ready', -- 'ready', 'used', 'archived'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS audit_logs (
@@ -58,9 +134,19 @@ db.exec(`
 
 try {
   db.exec("ALTER TABLE audit_logs ADD COLUMN reviewed BOOLEAN DEFAULT 0");
-} catch (e) {
-  // Column likely already exists
-}
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE account_metrics ADD COLUMN total_followers INTEGER");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE account_metrics ADD COLUMN likes_7d INTEGER");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE account_metrics ADD COLUMN dislikes_7d INTEGER");
+} catch (e) {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS insights (
@@ -99,15 +185,60 @@ async function startServer() {
 
   app.use(express.json());
 
+  const apiRouter = express.Router();
+  app.use("/api", apiRouter);
+
+  // Apply Auth Middleware to all /api routes except health
+  apiRouter.use((req, res, next) => {
+    if (req.path === "/health" || req.path === "/health/") return next();
+    authMiddleware(req, res, next);
+  });
+
   // --- API Routes ---
 
+  // Health
+  apiRouter.get("/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  // Auth Verification
+  apiRouter.get("/auth/verify", (req, res) => {
+    res.json({ success: true });
+  });
+
   // Accounts
-  app.get("/api/accounts", (req, res) => {
+  apiRouter.get("/accounts", (req, res) => {
     const accounts = db.prepare("SELECT * FROM accounts").all();
     res.json(accounts);
   });
 
-  app.post("/api/accounts", (req, res) => {
+  apiRouter.get("/accounts/export", (req, res) => {
+    const accounts = db.prepare("SELECT * FROM accounts").all();
+    const fields = ['platform', 'handle', 'profile_url', 'pod_owner', 'backup_owner', 'status_tag', 'cadence_target_per_week', 'priority_level'];
+    const parser = new Parser({ fields });
+    const csv = parser.parse(accounts);
+    res.header('Content-Type', 'text/csv');
+    res.attachment('accounts.csv');
+    res.send(csv);
+  });
+
+  apiRouter.post("/accounts/import", upload.single('file'), (req, res) => {
+    if (!(req as any).file) return res.status(400).json({ error: "No file uploaded" });
+    const records = parse((req as any).file.buffer, { columns: true, skip_empty_lines: true });
+    const stmt = db.prepare(`
+      INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertMany = db.transaction((rows) => {
+      for (const row of rows) {
+        stmt.run(row.platform, row.handle, row.profile_url, row.pod_owner, row.backup_owner, row.status_tag || 'active', row.cadence_target_per_week || 1, row.priority_level || 'medium');
+      }
+    });
+    insertMany(records);
+    res.json({ success: true, count: records.length });
+  });
+
+  apiRouter.post("/accounts", (req, res) => {
     const { platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week } = req.body;
     const info = db.prepare(`
       INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week)
@@ -116,7 +247,7 @@ async function startServer() {
     res.json({ id: info.lastInsertRowid });
   });
 
-  app.patch("/api/accounts/:id", (req, res) => {
+  apiRouter.patch("/accounts/:id", (req, res) => {
     const { id } = req.params;
     const { status_tag, last_post_ts } = req.body;
     if (status_tag) db.prepare("UPDATE accounts SET status_tag = ? WHERE id = ?").run(status_tag, id);
@@ -125,22 +256,151 @@ async function startServer() {
   });
 
   // Metrics
-  app.get("/api/metrics/:accountId", (req, res) => {
-    const metrics = db.prepare("SELECT * FROM metrics WHERE account_id = ? ORDER BY date DESC LIMIT 30").all(req.params.accountId);
+  apiRouter.get("/metrics/:accountId", (req, res) => {
+    const metrics = db.prepare(`
+      SELECT 
+        id, 
+        account_id, 
+        timestamp as date, 
+        avg_reach_7d as reach, 
+        saves_7d as saves, 
+        shares_7d as shares, 
+        follower_delta_7d as follower_delta,
+        avg_reach_7d as reach_7d,
+        (saves_7d + shares_7d) as engagement_7d,
+        likes_7d,
+        dislikes_7d
+      FROM account_metrics 
+      WHERE account_id = ? 
+      ORDER BY timestamp DESC 
+      LIMIT 30
+    `).all(req.params.accountId);
     res.json(metrics);
   });
 
-  app.post("/api/metrics", (req, res) => {
-    const { account_id, reach, saves, shares, watch_time, follower_delta, posts_count } = req.body;
+  apiRouter.post("/metrics", (req, res) => {
+    const { account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, likes_7d, dislikes_7d } = req.body;
     db.prepare(`
-      INSERT INTO metrics (account_id, reach, saves, shares, watch_time, follower_delta, posts_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(account_id, reach, saves, shares, watch_time, follower_delta, posts_count);
+      INSERT INTO account_metrics (account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, likes_7d, dislikes_7d)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, likes_7d || 0, dislikes_7d || 0);
+    res.json({ success: true });
+  });
+
+  // Alerts
+  apiRouter.get("/alerts", (req, res) => {
+    const alerts = db.prepare(`
+      SELECT al.*, a.handle, a.platform 
+      FROM alerts al 
+      JOIN accounts a ON al.account_id = a.id 
+      WHERE al.status = 'pending'
+      ORDER BY created_at DESC
+    `).all();
+    res.json(alerts);
+  });
+
+  apiRouter.patch("/alerts/:id", (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    db.prepare("UPDATE alerts SET status = ? WHERE id = ?").run(status, id);
+    res.json({ success: true });
+  });
+
+  // Scheduled Posts
+  apiRouter.get("/scheduled-posts", (req, res) => {
+    const posts = db.prepare(`
+      SELECT sp.*, a.handle 
+      FROM scheduled_posts sp 
+      JOIN accounts a ON sp.account_id = a.id 
+      ORDER BY scheduled_time ASC
+    `).all();
+    res.json(posts);
+  });
+
+  apiRouter.post("/scheduled-posts", (req, res) => {
+    const { account_id, platform, content_type, scheduled_time, caption, asset_url } = req.body;
+    db.prepare(`
+      INSERT INTO scheduled_posts (account_id, platform, content_type, scheduled_time, caption, asset_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(account_id, platform, content_type, scheduled_time, caption, asset_url);
+    res.json({ success: true });
+  });
+
+  apiRouter.patch("/scheduled-posts/:id", (req, res) => {
+    const { id } = req.params;
+    const { status, scheduled_time, caption } = req.body;
+    const updates = [];
+    const values = [];
+    if (status) { updates.push("status = ?"); values.push(status); }
+    if (scheduled_time) { updates.push("scheduled_time = ?"); values.push(scheduled_time); }
+    if (caption) { updates.push("caption = ?"); values.push(caption); }
+    
+    if (updates.length > 0) {
+      db.prepare(`UPDATE scheduled_posts SET ${updates.join(", ")} WHERE id = ?`).run(...values, id);
+    }
+    res.json({ success: true });
+  });
+
+  apiRouter.delete("/scheduled-posts/:id", (req, res) => {
+    db.prepare("DELETE FROM scheduled_posts WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  });
+
+  // Ready Assets
+  apiRouter.get("/ready-assets", (req, res) => {
+    const assets = db.prepare("SELECT * FROM ready_assets WHERE status = 'ready' ORDER BY created_at DESC").all();
+    res.json(assets);
+  });
+
+  apiRouter.post("/ready-assets/upload", upload.single('file'), (req, res) => {
+    if (!(req as any).file) return res.status(400).json({ error: "No file uploaded" });
+    const records = parse((req as any).file.buffer, { columns: true, skip_empty_lines: true });
+    const stmt = db.prepare(`
+      INSERT INTO ready_assets (title, type, url, thumbnail_url)
+      VALUES (?, ?, ?, ?)
+    `);
+    const insertMany = db.transaction((rows) => {
+      for (const row of rows) {
+        stmt.run(row.title, row.type, row.url, row.thumbnail_url);
+      }
+    });
+    insertMany(records);
+    res.json({ success: true, count: records.length });
+  });
+
+  apiRouter.get("/external-assets", (req, res) => {
+    // Mock Drive/Dropbox listing
+    res.json([
+      { id: '1', title: 'Promo Video - Dr Ray', type: 'Video', url: 'https://example.com/v1', thumbnail_url: 'https://picsum.photos/seed/v1/200/200' },
+      { id: '2', title: 'Deacon Harold Interview', type: 'Video', url: 'https://example.com/v2', thumbnail_url: 'https://picsum.photos/seed/v2/200/200' },
+      { id: '3', title: 'Fr Mike Homily', type: 'Video', url: 'https://example.com/v3', thumbnail_url: 'https://picsum.photos/seed/v3/200/200' },
+    ]);
+  });
+
+  apiRouter.post("/ready-assets", (req, res) => {
+    const { title, type, url, thumbnail_url } = req.body;
+    db.prepare(`
+      INSERT INTO ready_assets (title, type, url, thumbnail_url)
+      VALUES (?, ?, ?, ?)
+    `).run(title, type, url, thumbnail_url);
+    res.json({ success: true });
+  });
+
+  apiRouter.patch("/ready-assets/:id", (req, res) => {
+    const { id } = req.params;
+    const { status, title } = req.body;
+    if (status) db.prepare("UPDATE ready_assets SET status = ? WHERE id = ?").run(status, id);
+    if (title) db.prepare("UPDATE ready_assets SET title = ? WHERE id = ?").run(title, id);
+    res.json({ success: true });
+  });
+
+  apiRouter.delete("/ready-assets/:id", (req, res) => {
+    db.prepare("DELETE FROM ready_assets WHERE id = ?").run(req.params.id);
     res.json({ success: true });
   });
 
   // Audit Logs
-  app.get("/api/audit-logs", (req, res) => {
+  apiRouter.get("/audit-logs", (req, res) => {
     const logs = db.prepare(`
       SELECT al.*, a.handle, a.platform 
       FROM audit_logs al 
@@ -150,7 +410,7 @@ async function startServer() {
     res.json(logs);
   });
 
-  app.post("/api/audit-logs", (req, res) => {
+  apiRouter.post("/audit-logs", (req, res) => {
     const { account_id, reviewer, thumbnail_ok, captions_ok, cta_ok, cadence_ok, notes } = req.body;
     db.prepare(`
       INSERT INTO audit_logs (account_id, reviewer, thumbnail_ok, captions_ok, cta_ok, cadence_ok, notes, reviewed)
@@ -159,7 +419,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.patch("/api/audit-logs/batch", (req, res) => {
+  apiRouter.patch("/audit-logs/batch", (req, res) => {
     const { ids, data } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: "Invalid IDs" });
@@ -176,19 +436,19 @@ async function startServer() {
   });
 
   // Insights
-  app.get("/api/insights", (req, res) => {
+  apiRouter.get("/insights", (req, res) => {
     const insights = db.prepare("SELECT * FROM insights ORDER BY created_at DESC").all();
     res.json(insights);
   });
 
-  app.post("/api/insights", (req, res) => {
+  apiRouter.post("/insights", (req, res) => {
     const { content, tags } = req.body;
     db.prepare("INSERT INTO insights (content, tags) VALUES (?, ?)").run(content, JSON.stringify(tags));
     res.json({ success: true });
   });
 
   // Settings
-  app.get("/api/settings", (req, res) => {
+  apiRouter.get("/settings", (req, res) => {
     const settings = db.prepare("SELECT * FROM settings").all();
     const result = settings.reduce((acc: any, curr: any) => {
       acc[curr.key] = JSON.parse(curr.value);
@@ -197,10 +457,25 @@ async function startServer() {
     res.json(result);
   });
 
-  app.post("/api/settings", (req, res) => {
+  apiRouter.post("/settings", (req, res) => {
     const { key, value } = req.body;
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
     res.json({ success: true });
+  });
+
+  // Ingestion Control
+  apiRouter.get("/ingest/status", (req, res) => {
+    res.json(ingestionStatus);
+  });
+
+  apiRouter.post("/ingest/trigger", (req, res) => {
+    runIngestion(); // Run in background
+    res.json({ success: true, message: "Ingestion triggered" });
+  });
+
+  // 404 for API routes
+  apiRouter.use((req, res) => {
+    res.status(404).json({ error: `API route ${req.originalUrl} not found` });
   });
 
   // --- Vite Middleware ---
@@ -220,37 +495,15 @@ async function startServer() {
 
   // --- Background Tasks ---
 
-  // Mock Metrics Ingestion (Simulating API pulls)
+  // Real Metrics Ingestion
   setInterval(() => {
-    const accounts = db.prepare("SELECT id FROM accounts WHERE status = 'active'").all();
-    accounts.forEach((acc: any) => {
-      const lastMetric = db.prepare("SELECT * FROM metrics WHERE account_id = ? ORDER BY date DESC LIMIT 1").get(acc.id);
-      
-      // Only add if no metric for today
-      const today = new Date().toISOString().split('T')[0];
-      if (!lastMetric || lastMetric.date !== today) {
-        const reach = Math.floor(Math.random() * 5000) + 1000;
-        const saves = Math.floor(reach * 0.05);
-        const shares = Math.floor(reach * 0.02);
-        const watch_time = Math.floor(reach * 1.5);
-        const follower_delta = Math.floor(Math.random() * 100) - 20;
-
-        db.prepare(`
-          INSERT INTO metrics (account_id, date, reach, saves, shares, watch_time, follower_delta, posts_count)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(acc.id, today, reach, saves, shares, watch_time, follower_delta, 1);
-
-        // Check for alerts
-        const settingsRaw = db.prepare("SELECT value FROM settings WHERE key = 'thresholds'").get();
-        const thresholds = JSON.parse(settingsRaw.value);
-        
-        if (lastMetric && reach < lastMetric.reach * (1 - thresholds.reach_drop / 100)) {
-          console.log(`ALERT: Reach drop detected for account ${acc.id}`);
-          // In a real app, trigger WhatsApp/Slack/Email here
-        }
-      }
-    });
+    runIngestion();
   }, 1000 * 60 * 60); // Run every hour
+
+  // Initial run on startup
+  setTimeout(() => {
+    runIngestion();
+  }, 5000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

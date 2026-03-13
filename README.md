@@ -1,20 +1,40 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Relay - Social Media Infrastructure Dashboard
 
-# Run and deploy your AI Studio app
+High-fidelity dashboard for social media command and control.
 
-This contains everything you need to run your app locally.
+## Setup
 
-View your app in AI Studio: https://ai.studio/apps/3aa97b0a-012d-47ed-bb0a-fd57be40b3fe
+1.  **Environment Variables**:
+    Copy `.env.example` to `.env` and fill in the values.
+    ```bash
+    cp .env.example .env
+    ```
+    - `SHARED_AUTH_TOKEN`: Shared secret for API authentication.
+    - `GEMINI_API_KEY`: Required for the AI-driven data ingestion engine.
+    - `META_ACCESS_TOKEN`: Required for real Meta (Instagram/Facebook) data pulls.
+    - `YOUTUBE_API_KEY`: Required for real YouTube data pulls.
 
-## Run Locally
+2.  **Dependencies**:
+    ```bash
+    npm install
+    ```
 
-**Prerequisites:**  Node.js
+3.  **Development Server**:
+    ```bash
+    npm run dev
+    ```
 
+4.  **Data Ingestion (Local Cron)**:
+    To pull fresh metrics and generate alerts manually or via a local cron job:
+    ```bash
+    npm run ingest
+    ```
+    *Note: The server also runs this process automatically every hour while active.*
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Features
+
+- **Ecosystem Intelligence**: Real-time monitoring of social media nodes.
+- **Anomalies Engine**: Automated detection of cadence gaps and metric drops.
+- **Audit Pipeline**: High-fidelity quality control for content output.
+- **Strategic Insights**: AI-generated engagement strategies.
+- **Account Registry**: Complete management of digital infrastructure with CSV import/export.
