@@ -28,8 +28,8 @@ export interface SocialMetrics {
  * Fetch real YouTube metrics using the YouTube Data API.
  * Requires YOUTUBE_API_KEY and the channel's ID.
  */
-export async function fetchYouTubeMetrics(channelId: string): Promise<SocialMetrics | null> {
-  const apiKey = process.env.YOUTUBE_API_KEY;
+export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: string): Promise<SocialMetrics | null> {
+  const apiKey = providedApiKey || process.env.YOUTUBE_API_KEY;
   if (!apiKey || !channelId) return null;
 
   try {
@@ -112,8 +112,8 @@ export async function fetchYouTubeMetrics(channelId: string): Promise<SocialMetr
  * Fetch real Meta (Instagram) metrics using the Graph API.
  * Requires META_ACCESS_TOKEN and the Instagram Business Account ID.
  */
-export async function fetchMetaMetrics(instagramId: string): Promise<SocialMetrics | null> {
-  const accessToken = process.env.META_ACCESS_TOKEN;
+export async function fetchMetaMetrics(instagramId: string, providedAccessToken?: string): Promise<SocialMetrics | null> {
+  const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
   if (!accessToken || !instagramId) return null;
 
   try {

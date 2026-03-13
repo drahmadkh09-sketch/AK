@@ -139,6 +139,8 @@ export async function ingest(db: any = dbInstance) {
   console.log("Starting data ingestion...");
   
   const accounts = db.prepare("SELECT * FROM accounts WHERE status_tag = 'active'").all();
+  const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+  const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
   
   for (const acc of accounts as any) {
     console.log(`Ingesting data for ${acc.handle} (${acc.platform})...`);
@@ -148,9 +150,9 @@ export async function ingest(db: any = dbInstance) {
 
       // 1. Attempt Real API Pulls
       if (acc.platform === 'Instagram' || acc.platform === 'Facebook') {
-        metrics = await fetchMetaMetrics(acc.platform_account_id);
+        metrics = await fetchMetaMetrics(acc.platform_account_id, apiKeys.meta);
       } else if (acc.platform === 'YouTube') {
-        metrics = await fetchYouTubeMetrics(acc.platform_account_id);
+        metrics = await fetchYouTubeMetrics(acc.platform_account_id, apiKeys.youtube);
       }
 
       // 2. Fallback to Gemini if real API fails or is not configured

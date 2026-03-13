@@ -6,19 +6,27 @@ import {defineConfig, loadEnv} from 'vite';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   
-  // Validate Gemini API Key
-  const apiKey = env.GEMINI_API_KEY;
-  const isPlaceholder = !apiKey || 
-                        apiKey.includes('your_') || 
-                        apiKey.includes('TODO') || 
-                        apiKey.includes('key_here') ||
-                        apiKey.length < 15;
+  // Validate API Keys
+  const geminiKey = env.GEMINI_API_KEY;
+  const youtubeKey = env.YOUTUBE_API_KEY;
+  const metaToken = env.META_ACCESS_TOKEN;
 
-  if (isPlaceholder) {
-    console.warn('\x1b[33m%s\x1b[0m', 'âš ï¸  WARNING: GEMINI_API_KEY is not properly configured.');
-    console.warn('\x1b[33m%s\x1b[0m', '   Please set a valid Gemini API key in the Settings menu to enable AI features.');
-  } else {
-    console.log('\x1b[32m%s\x1b[0m', 'âœ… GEMINI_API_KEY detected and validated.');
+  const isGeminiPlaceholder = !geminiKey || geminiKey.includes('your_') || geminiKey.length < 15;
+  const isYoutubePlaceholder = !youtubeKey || youtubeKey.includes('your_') || youtubeKey.length < 15;
+  const isMetaPlaceholder = !metaToken || metaToken.includes('your_') || metaToken.length < 15;
+
+  if (isGeminiPlaceholder) {
+    console.warn('\x1b[33m%s\x1b[0m', '⚠️  WARNING: GEMINI_API_KEY is not properly configured.');
+  }
+  if (isYoutubePlaceholder) {
+    console.warn('\x1b[33m%s\x1b[0m', '⚠️  WARNING: YOUTUBE_API_KEY is not properly configured.');
+  }
+  if (isMetaPlaceholder) {
+    console.warn('\x1b[33m%s\x1b[0m', '⚠️  WARNING: META_ACCESS_TOKEN is not properly configured.');
+  }
+
+  if (!isGeminiPlaceholder && !isYoutubePlaceholder && !isMetaPlaceholder) {
+    console.log('\x1b[32m%s\x1b[0m', '✅ All critical API keys detected and validated.');
   }
 
   return {
@@ -33,7 +41,7 @@ export default defineConfig(({mode}) => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };

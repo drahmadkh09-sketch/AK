@@ -315,6 +315,7 @@ async function startServer() {
         saves_7d as saves, 
         shares_7d as shares, 
         follower_delta_7d as follower_delta,
+        total_followers,
         avg_reach_7d as reach_7d,
         (saves_7d + shares_7d) as engagement_7d,
         likes_7d,
@@ -517,12 +518,15 @@ async function startServer() {
     const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as any;
     if (!account) return res.status(404).json({ error: "Account not found" });
 
+    const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+    const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+
     let metrics = null;
     try {
       if (account.platform === 'YouTube' && account.platform_account_id) {
-        metrics = await fetchYouTubeMetrics(account.platform_account_id);
+        metrics = await fetchYouTubeMetrics(account.platform_account_id, apiKeys.youtube);
       } else if (account.platform === 'Instagram' && account.platform_account_id) {
-        metrics = await fetchMetaMetrics(account.platform_account_id);
+        metrics = await fetchMetaMetrics(account.platform_account_id, apiKeys.meta);
       }
       res.json(metrics);
     } catch (error) {

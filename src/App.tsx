@@ -1253,6 +1253,7 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
     reach: m.reach,
     engagement: m.saves + m.shares,
     followers: m.follower_delta,
+    totalFollowers: m.total_followers,
     reach7d: m.reach_7d,
     engagement7d: m.engagement_7d,
     likes: m.likes_7d || 0,
@@ -1269,6 +1270,7 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
       reach: realtimeData.avg_reach_7d,
       engagement: realtimeData.saves_7d + realtimeData.shares_7d,
       followers: realtimeData.follower_delta_7d,
+      totalFollowers: realtimeData.total_followers,
       reach7d: realtimeData.avg_reach_7d * 7,
       engagement7d: (realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0),
       likes: realtimeData.likes_7d || 0,
@@ -1340,6 +1342,52 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+        <div className="glass-card p-10 border-white/5 lg:col-span-2">
+          <h3 className="text-2xl font-serif font-medium mb-10">Total Followers Growth</h3>
+          <div className="h-[400px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="rgba(255,255,255,0.2)" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false}
+                  tick={{ fill: 'rgba(255,255,255,0.4)', fontWeight: 700 }}
+                />
+                <YAxis 
+                  stroke="rgba(255,255,255,0.2)" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false}
+                  tick={{ fill: 'rgba(255,255,255,0.4)', fontWeight: 700 }}
+                  domain={['auto', 'auto']}
+                />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'rgba(5, 5, 5, 0.9)', 
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '16px',
+                    backdropFilter: 'blur(10px)',
+                    color: '#fff'
+                  }} 
+                  itemStyle={{ color: '#10B981' }}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="totalFollowers" 
+                  name="Total Followers" 
+                  stroke="#10B981" 
+                  strokeWidth={4} 
+                  dot={{ fill: '#10B981', strokeWidth: 2, r: 4, stroke: '#050505' }}
+                  activeDot={{ r: 8, strokeWidth: 0 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
         <div className="glass-card p-10 border-white/5">
           <h3 className="text-2xl font-serif font-medium mb-10">Reach Trajectory (7D Rolling)</h3>
           <div className="h-[400px] w-full">
@@ -2403,6 +2451,36 @@ function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUp
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+        <section className="glass-card p-10 border-white/5 space-y-10">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-brand-primary/10 rounded-2xl flex items-center justify-center text-brand-primary">
+              <Library className="w-6 h-6" />
+            </div>
+            <h3 className="text-2xl font-serif font-medium">API Credentials</h3>
+          </div>
+          
+          <div className="space-y-8">
+            <SettingsInput 
+              label="Gemini API Key" 
+              type="password"
+              value={settings.api_keys?.gemini || ''} 
+              onChange={v => handleUpdate('api_keys', { ...settings.api_keys, gemini: v })}
+            />
+            <SettingsInput 
+              label="YouTube Data API Key" 
+              type="password"
+              value={settings.api_keys?.youtube || ''} 
+              onChange={v => handleUpdate('api_keys', { ...settings.api_keys, youtube: v })}
+            />
+            <SettingsInput 
+              label="Meta Access Token" 
+              type="password"
+              value={settings.api_keys?.meta || ''} 
+              onChange={v => handleUpdate('api_keys', { ...settings.api_keys, meta: v })}
+            />
+          </div>
+        </section>
+
         <section className="glass-card p-10 border-white/5 space-y-10">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-brand-primary/10 rounded-2xl flex items-center justify-center text-brand-primary">

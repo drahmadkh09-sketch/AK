@@ -14,13 +14,14 @@ export interface Account {
 export interface Metric {
   id: number;
   account_id: number;
-  timestamp: string;
-  posts_per_day_7d: number;
-  avg_reach_7d: number;
-  saves_7d: number;
-  shares_7d: number;
-  watch_time_7d: number;
-  follower_delta_7d: number;
+  date: string;
+  reach: number;
+  saves: number;
+  shares: number;
+  follower_delta: number;
+  total_followers: number;
+  reach_7d: number;
+  engagement_7d: number;
   likes_7d?: number;
   dislikes_7d?: number;
 }
@@ -90,5 +91,10 @@ export interface Settings {
   thresholds: {
     reach_drop: number;
     cadence_gap_hours: number;
+  };
+  api_keys?: {
+    gemini?: string;
+    youtube?: string;
+    meta?: string;
   };
 }
