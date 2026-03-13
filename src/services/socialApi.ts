@@ -168,3 +168,108 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
     return null;
   }
 }
+
+/**
+ * Resolve a YouTube handle (e.g., @avemariaradio) to a Channel ID.
+ */
+export async function resolveYouTubeHandle(handle: string, providedApiKey?: string): Promise<string | null> {
+  const apiKey = providedApiKey || process.env.YOUTUBE_API_KEY;
+  if (!apiKey || !handle) return null;
+
+  const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
+
+  try {
+    const youtube = google.youtube({ version: 'v3', auth: apiKey });
+    
+    // 1. Try resolving via handle (modern way)
+    const res = await youtube.channels.list({
+      part: ['id'],
+      forHandle: cleanHandle
+    });
+
+    if (res.data.items?.[0]?.id) {
+      return res.data.items[0].id;
+    }
+
+    // 2. Fallback: Search for the channel by handle name
+    const searchRes = await youtube.search.list({
+      part: ['id'],
+      q: handle,
+      type: ['channel'],
+      maxResults: 1
+    });
+
+    return searchRes.data.items?.[0]?.id?.channelId || null;
+  } catch (error) {
+    console.error('YouTube Resolve Error:', error);
+    return null;
+  }
+}
+
+/**
+ * Resolve an Instagram handle to a Business Account ID.
+ * This requires Business Discovery permissions and a valid Business ID to act as the requester.
+ */
+export async function resolveInstagramHandle(handle: string, requesterBusinessId: string, providedAccessToken?: string): Promise<string | null> {
+  const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
+  if (!accessToken || !handle || !requesterBusinessId) return null;
+
+  const cleanHandle = handle.startsWith('@') ? handle.substring(1) : handle;
+
+  try {
+    const res = await axios.get(`https://graph.facebook.com/v21.0/${requesterBusinessId}`, {
+      params: {
+        fields: `business_discovery.username(${cleanHandle}){id}`,
+        access_token: accessToken,
+      }
+    });
+
+    return res.data.business_discovery?.id || null;
+  } catch (error) {
+    console.error('Instagram Resolve Error:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the Instagram Business Account ID associated with the access token.
+ */
+export async function getInstagramBusinessIdFromToken(providedAccessToken?: string): Promise<string | null> {
+  const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
+  if (!accessToken) return null;
+
+  try {
+    // 1. Get Facebook Pages associated with the token
+    const pagesRes = await axios.get(`https://graph.facebook.com/v21.0/me/accounts`, {
+      params: {
+        access_token: accessToken,
+      }
+    });
+
+    const pages = pagesRes.data.data;
+    if (!pages || pages.length === 0) return null;
+
+    // 2. For each page, check if it has a linked Instagram Business Account
+    for (const page of pages) {
+      const igRes = await axios.get(`https://graph.facebook.com/v21.0/${page.id}`, {
+        params: {
+          fields: 'instagram_business_account',
+          access_token: accessToken,
+        }
+      });
+
+      if (igRes.data.instagram_business_account?.id) {
+        return igRes.data.instagram_business_account.id;
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    if (error.response?.data?.error?.code === 190) {
+      console.error('Meta API Error: Access token has expired. Please update it in Settings.');
+    } else {
+      console.error('Error getting IG Business ID from token:', error.response?.data || error.message);
+    }
+    return null;
+  }
+}

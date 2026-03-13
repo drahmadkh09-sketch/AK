@@ -4,7 +4,7 @@ import path from "path";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
 import { ingest } from "./ingest";
-import { fetchYouTubeMetrics, fetchMetaMetrics } from "./src/services/socialApi";
+import { fetchYouTubeMetrics, fetchMetaMetrics, resolveYouTubeHandle, resolveInstagramHandle, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
 
 import multer from "multer";
 import { parse } from "csv-parse/sync";
@@ -246,6 +246,38 @@ async function startServer() {
   });
 
   // Accounts
+  apiRouter.get("/resolve-handle", async (req, res) => {
+    const { platform, handle } = req.query;
+    if (!platform || !handle) return res.status(400).json({ error: "Missing platform or handle" });
+
+    const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+    const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+
+    try {
+      if (platform === 'YouTube') {
+        const id = await resolveYouTubeHandle(handle as string, apiKeys.youtube);
+        return res.json({ id });
+      } else if (platform === 'Instagram') {
+        let requesterId = null;
+        const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
+        if (requester) {
+          requesterId = requester.platform_account_id;
+        } else {
+          requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+        }
+
+        if (!requesterId) return res.status(400).json({ error: "No Instagram Business ID found to use for discovery. Please configure Meta API key correctly." });
+        
+        const id = await resolveInstagramHandle(handle as string, requesterId, apiKeys.meta);
+        return res.json({ id });
+      }
+      res.status(400).json({ error: "Unsupported platform for resolution" });
+    } catch (error) {
+      console.error("Resolution error:", error);
+      res.status(500).json({ error: "Failed to resolve handle" });
+    }
+  });
+
   apiRouter.get("/accounts", (req, res) => {
     const accounts = db.prepare("SELECT * FROM accounts").all();
     res.json(accounts);
@@ -543,6 +575,20 @@ async function startServer() {
   apiRouter.post("/ingest/trigger", (req, res) => {
     runIngestion(); // Run in background
     res.json({ success: true, message: "Ingestion triggered" });
+  });
+
+  apiRouter.post("/ingest/account/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as any;
+    if (!account) return res.status(404).json({ error: "Account not found" });
+
+    try {
+      await ingest(db, id);
+      res.json({ success: true, message: `Ingestion completed for @${account.handle}` });
+    } catch (error: any) {
+      console.error(`Ingestion failed for @${account.handle}:`, error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // 404 for API routes

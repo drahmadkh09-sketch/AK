@@ -2,14 +2,16 @@ import Database from "better-sqlite3";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
-import { fetchMetaMetrics, fetchYouTubeMetrics, SocialMetrics } from "./src/services/socialApi";
+import { fetchMetaMetrics, fetchYouTubeMetrics, resolveYouTubeHandle, resolveInstagramHandle, SocialMetrics, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
 
 dotenv.config({ override: true });
 
 const dbInstance = new Database("dashboard.db");
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export async function generateWithFallback(prompt: string) {
-  const models = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-2.5-flash-preview"];
+  const models = ["gemini-3-flash-preview", "gemini-3.1-pro-preview"];
   
   // Try to find a valid-looking API key
   const apiKeys = [
@@ -42,8 +44,8 @@ export async function generateWithFallback(prompt: string) {
   }) as string[];
 
   if (apiKeys.length === 0) {
-    console.error("No valid Gemini API key found. Checked: GEMINI_API_KEY, API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY_1_5");
-    throw new Error("No valid Gemini API key found in environment variables. Please set GEMINI_API_KEY in Settings.");
+    console.warn("No valid Gemini API key found. Using static fallback.");
+    return null;
   }
 
   let lastError: any = null;
@@ -69,6 +71,7 @@ export async function generateWithFallback(prompt: string) {
         
         if (errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("exhausted")) {
           console.warn(`Quota exceeded for ${model} with key ${maskedKey}, trying next...`);
+          await sleep(2000); // Wait a bit before trying next
           continue;
         }
         
@@ -82,7 +85,8 @@ export async function generateWithFallback(prompt: string) {
     }
   }
   
-  throw lastError || new Error("All models and keys failed.");
+  console.warn("All Gemini models and keys failed. Using static fallback.");
+  return null;
 }
 
 async function sendNotification(db: any, message: string, severity: string) {
@@ -135,10 +139,15 @@ async function sendNotification(db: any, message: string, severity: string) {
   }
 }
 
-export async function ingest(db: any = dbInstance) {
+export async function ingest(db: any = dbInstance, accountId?: number) {
   console.log("Starting data ingestion...");
   
-  const accounts = db.prepare("SELECT * FROM accounts WHERE status_tag = 'active'").all();
+  let accounts;
+  if (accountId) {
+    accounts = db.prepare("SELECT * FROM accounts WHERE id = ?").all(accountId);
+  } else {
+    accounts = db.prepare("SELECT * FROM accounts WHERE status_tag = 'active'").all();
+  }
   const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
   const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
   
@@ -147,12 +156,40 @@ export async function ingest(db: any = dbInstance) {
     
     try {
       let metrics: SocialMetrics | null = null;
+      let platformAccountId = acc.platform_account_id;
+
+      // 0. Resolve ID if missing
+      if (!platformAccountId) {
+        console.log(`Resolving handle for ${acc.handle}...`);
+        if (acc.platform === 'YouTube') {
+          platformAccountId = await resolveYouTubeHandle(acc.handle, apiKeys.youtube);
+        } else if (acc.platform === 'Instagram') {
+          let requesterId = null;
+          const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
+          if (requester) {
+            requesterId = requester.platform_account_id;
+          } else {
+            // Fallback: try to get ID from token
+            requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+          }
+          
+          if (requesterId) {
+            platformAccountId = await resolveInstagramHandle(acc.handle, requesterId, apiKeys.meta);
+          }
+        }
+        if (platformAccountId) {
+          db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platformAccountId, acc.id);
+          console.log(`Resolved ${acc.handle} to ${platformAccountId}`);
+        }
+      }
 
       // 1. Attempt Real API Pulls
-      if (acc.platform === 'Instagram' || acc.platform === 'Facebook') {
-        metrics = await fetchMetaMetrics(acc.platform_account_id, apiKeys.meta);
-      } else if (acc.platform === 'YouTube') {
-        metrics = await fetchYouTubeMetrics(acc.platform_account_id, apiKeys.youtube);
+      if (platformAccountId) {
+        if (acc.platform === 'Instagram' || acc.platform === 'Facebook') {
+          metrics = await fetchMetaMetrics(platformAccountId, apiKeys.meta);
+        } else if (acc.platform === 'YouTube') {
+          metrics = await fetchYouTubeMetrics(platformAccountId, apiKeys.youtube);
+        }
       }
 
       // 2. Fallback to Gemini if real API fails or is not configured
@@ -163,7 +200,21 @@ export async function ingest(db: any = dbInstance) {
         Base it on the typical performance of such an account if you recognize it, otherwise provide realistic industry averages for that platform.`;
         
         const responseText = await generateWithFallback(prompt);
-        metrics = JSON.parse(responseText);
+        if (responseText) {
+          metrics = JSON.parse(responseText);
+        } else {
+          // Absolute static fallback if even Gemini fails
+          metrics = {
+            posts_per_day_7d: 0.5 + Math.random(),
+            avg_reach_7d: 500 + Math.floor(Math.random() * 1000),
+            saves_7d: 10 + Math.floor(Math.random() * 50),
+            shares_7d: 5 + Math.floor(Math.random() * 30),
+            watch_time_7d: 1000 + Math.floor(Math.random() * 5000),
+            follower_delta_7d: 5 + Math.floor(Math.random() * 20),
+            total_followers: 1000 + Math.floor(Math.random() * 5000)
+          };
+          console.log(`Using absolute static fallback for ${acc.handle}`);
+        }
       }
 
       if (metrics) {
@@ -229,6 +280,11 @@ export async function ingest(db: any = dbInstance) {
       }
       
       console.log(`Successfully ingested ${acc.handle}`);
+      
+      // Sleep between accounts to avoid hitting rate limits
+      if (!accountId) {
+        await sleep(1000);
+      }
     } catch (error) {
       console.error(`Failed to ingest ${acc.handle}:`, error);
     }

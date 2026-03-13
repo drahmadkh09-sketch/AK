@@ -93,6 +93,10 @@ export const api = {
     const res = await fetch(`${API_BASE}/accounts/${accountId}/realtime-metrics`, { headers: getHeaders() });
     return handleResponse(res, 'Failed to fetch realtime metrics');
   },
+  resolveHandle: async (platform: string, handle: string): Promise<{ id: string | null }> => {
+    const res = await fetch(`${API_BASE}/resolve-handle?platform=${platform}&handle=${encodeURIComponent(handle)}`, { headers: getHeaders() });
+    return handleResponse(res, 'Failed to resolve handle');
+  },
   addMetric: async (metric: Partial<Metric>): Promise<void> => {
     const res = await fetch(`${API_BASE}/metrics`, {
       method: 'POST',
@@ -211,5 +215,12 @@ export const api = {
       headers: getHeaders(),
     });
     await handleResponse(res, 'Failed to trigger ingestion');
+  },
+  triggerAccountIngest: async (id: number): Promise<void> => {
+    const res = await fetch(`${API_BASE}/ingest/account/${id}`, {
+      method: 'POST',
+      headers: getHeaders(),
+    });
+    await handleResponse(res, 'Failed to trigger account ingestion');
   },
 };

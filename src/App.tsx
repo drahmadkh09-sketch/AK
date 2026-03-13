@@ -821,6 +821,7 @@ function Overview({ accounts, auditLogs, insights, settings, alerts, scheduledPo
 
 function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [newAccount, setNewAccount] = useState<Partial<Account>>({
     platform: 'Instagram',
@@ -829,11 +830,51 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
     status_tag: 'active'
   });
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (newAccount.handle && newAccount.handle.length > 3 && !newAccount.platform_account_id) {
+        resolveHandle();
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [newAccount.handle, newAccount.platform]);
+
+  const resolveHandle = async () => {
+    if (!newAccount.handle || !newAccount.platform) return;
+    setIsResolving(true);
+    try {
+      const { id } = await api.resolveHandle(newAccount.platform, newAccount.handle);
+      if (id) {
+        let profileUrl = '';
+        if (newAccount.platform === 'YouTube') profileUrl = `https://youtube.com/${newAccount.handle}`;
+        if (newAccount.platform === 'Instagram') profileUrl = `https://instagram.com/${newAccount.handle.startsWith('@') ? newAccount.handle.substring(1) : newAccount.handle}`;
+        
+        setNewAccount(prev => ({
+          ...prev,
+          platform_account_id: id,
+          profile_url: profileUrl
+        }));
+      }
+    } catch (error) {
+      console.error('Resolution failed', error);
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    await api.createAccount(newAccount);
-    setShowAdd(false);
-    onUpdate();
+    try {
+      const result = await api.createAccount(newAccount);
+      if (result && result.id) {
+        // Trigger immediate ingestion for the new account
+        await api.triggerAccountIngest(result.id);
+      }
+      setShowAdd(false);
+      onUpdate();
+    } catch (error) {
+      console.error('Failed to add account', error);
+    }
   };
 
   const handleEdit = async (e: React.FormEvent) => {
@@ -997,13 +1038,24 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                 </div>
                 <div className="space-y-2">
                   <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Digital Handle</label>
-                  <input 
-                    type="text" 
-                    className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
-                    placeholder="@username"
-                    required
-                    onChange={e => setNewAccount({...newAccount, handle: e.target.value})}
-                  />
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      className="flex-1 p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
+                      placeholder="@username"
+                      required
+                      value={newAccount.handle || ''}
+                      onChange={e => setNewAccount({...newAccount, handle: e.target.value})}
+                    />
+                    <button 
+                      type="button"
+                      onClick={resolveHandle}
+                      disabled={isResolving || !newAccount.handle}
+                      className="px-6 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-widest text-white hover:bg-white/10 transition-all disabled:opacity-50"
+                    >
+                      {isResolving ? '...' : 'Resolve'}
+                    </button>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Platform Account ID</label>
@@ -1011,6 +1063,7 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                     type="text" 
                     className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
                     placeholder="ID for API (e.g. Channel ID)"
+                    value={newAccount.platform_account_id || ''}
                     onChange={e => setNewAccount({...newAccount, platform_account_id: e.target.value})}
                   />
                 </div>
@@ -1022,6 +1075,7 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                   type="url" 
                   className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
                   placeholder="https://..."
+                  value={newAccount.profile_url || ''}
                   onChange={e => setNewAccount({...newAccount, profile_url: e.target.value})}
                 />
               </div>
@@ -1291,7 +1345,12 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-6xl font-serif font-light luxury-text-gradient mb-2">Metrics Ingest</h1>
-          <p className="text-white/40 font-light tracking-wide">Performance tracking and high-fidelity data pulls.</p>
+          <p className="text-white/40 font-light tracking-wide">
+            Performance tracking and high-fidelity data pulls. 
+            {selectedAccountData?.last_ingest_ts && (
+              <span className="ml-4 text-emerald-500/60">Last Ingested: {format(new Date(selectedAccountData.last_ingest_ts), 'MMM d, HH:mm')}</span>
+            )}
+          </p>
         </div>
         <div className="relative">
           <select 
