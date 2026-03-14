@@ -162,11 +162,28 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
   
   const apiKeys = {
     meta: dbKeys.meta || process.env.META_ACCESS_TOKEN,
-    youtube: dbKeys.youtube || process.env.YOUTUBE_API_KEY,
+    youtube: dbKeys.youtube_keys || (dbKeys.youtube ? [dbKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []),
     gemini: dbKeys.gemini || process.env.GEMINI_API_KEY
   };
   
+  // Ensure youtube is an array
+  if (typeof apiKeys.youtube === 'string') {
+    apiKeys.youtube = (apiKeys.youtube as string).split(',').map(k => k.trim()).filter(Boolean);
+  }
+  
+  let youtubeQuotaHit = false;
+  let metaTokenInvalid = false;
+  
   for (const acc of accounts as any) {
+    if (acc.platform === 'YouTube' && youtubeQuotaHit) {
+      console.log(`Skipping ${acc.handle} due to YouTube quota limit.`);
+      continue;
+    }
+    if ((acc.platform === 'Instagram' || acc.platform === 'Facebook') && metaTokenInvalid) {
+      console.log(`Skipping ${acc.handle} due to invalid Meta token.`);
+      continue;
+    }
+
     console.log(`Ingesting data for ${acc.handle} (${acc.platform})...`);
     
     try {
@@ -176,25 +193,34 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
       // 0. Resolve ID if missing
       if (!platformAccountId) {
         console.log(`Resolving handle for ${acc.handle}...`);
-        if (acc.platform === 'YouTube') {
-          platformAccountId = await resolveYouTubeHandle(acc.handle, apiKeys.youtube);
-        } else if (acc.platform === 'Instagram') {
-          let requesterId = null;
-          const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
-          if (requester) {
-            requesterId = requester.platform_account_id;
-          } else {
-            // Fallback: try to get ID from token
-            requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+        try {
+          if (acc.platform === 'YouTube') {
+            platformAccountId = await resolveYouTubeHandle(acc.handle, apiKeys.youtube);
+          } else if (acc.platform === 'Instagram') {
+            let requesterId = null;
+            const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
+            if (requester) {
+              requesterId = requester.platform_account_id;
+            } else {
+              requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+            }
+            
+            if (requesterId) {
+              platformAccountId = await resolveInstagramHandle(acc.handle, requesterId, apiKeys.meta);
+            }
           }
-          
-          if (requesterId) {
-            platformAccountId = await resolveInstagramHandle(acc.handle, requesterId, apiKeys.meta);
+          if (platformAccountId) {
+            db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platformAccountId, acc.id);
+            console.log(`Resolved ${acc.handle} to ${platformAccountId}`);
           }
-        }
-        if (platformAccountId) {
-          db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platformAccountId, acc.id);
-          console.log(`Resolved ${acc.handle} to ${platformAccountId}`);
+        } catch (err: any) {
+          if (err.message?.includes('Quota')) {
+            youtubeQuotaHit = true;
+            const msg = "YouTube API Quota Exceeded. Automatic handle resolution and data ingestion are paused for YouTube accounts. Please manually provide Channel IDs in the Account Registry to reduce API usage.";
+            db.prepare("INSERT INTO alerts (account_id, type, message, severity) VALUES (?, 'system', ?, 'high')").run(acc.id, msg);
+            await sendNotification(db, msg, 'high');
+          }
+          console.error(`Resolve Error for ${acc.handle}:`, err.message);
         }
       }
 
@@ -208,6 +234,14 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
           }
         } catch (err: any) {
           console.error(`Ingest: API call error for ${acc.handle}:`, err.message);
+          if (err.message?.includes('Quota')) {
+            youtubeQuotaHit = true;
+          }
+          if (err.message?.includes('Invalid') && (acc.platform === 'Instagram' || acc.platform === 'Facebook')) {
+            metaTokenInvalid = true;
+          }
+          // Create an alert for the specific account
+          db.prepare("INSERT INTO alerts (account_id, type, message, severity) VALUES (?, 'api_error', ?, 'medium')").run(acc.id, `API Error for ${acc.handle}: ${err.message}`);
         }
       }
 
@@ -235,9 +269,9 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
         // Insert into account_metrics
         console.log(`Inserting metrics into database for ${acc.handle}...`);
         db.prepare(`
-          INSERT INTO account_metrics (account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, total_followers, likes_7d, dislikes_7d)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(acc.id, metrics.posts_per_day_7d, metrics.avg_reach_7d, metrics.saves_7d, metrics.shares_7d, metrics.watch_time_7d, metrics.follower_delta_7d, metrics.total_followers || null, metrics.likes_7d || 0, metrics.dislikes_7d || 0);
+          INSERT INTO account_metrics (account_id, posts_per_day_7d, avg_reach_7d, saves_7d, shares_7d, watch_time_7d, follower_delta_7d, total_followers, likes_7d, dislikes_7d, profile_visits_7d)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(acc.id, metrics.posts_per_day_7d, metrics.avg_reach_7d, metrics.saves_7d, metrics.shares_7d, metrics.watch_time_7d, metrics.follower_delta_7d, metrics.total_followers || null, metrics.likes_7d || 0, metrics.dislikes_7d || 0, metrics.profile_visits_7d || 0);
         
         // Update last_post_ts if we have posts
         if (metrics.posts_per_day_7d > 0) {

@@ -188,6 +188,10 @@ try {
   db.exec("ALTER TABLE account_metrics ADD COLUMN dislikes_7d INTEGER");
 } catch (e) {}
 
+try {
+  db.exec("ALTER TABLE account_metrics ADD COLUMN profile_visits_7d INTEGER");
+} catch (e) {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,6 +227,18 @@ db.exec(`
 const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
 let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
 let updated = false;
+
+const backupYoutubeKey = "AIzaSyCnw-GPtjbP89Qv-2ppeEKOLAhT5MtRVEc";
+if (!keys.youtube_keys) {
+  keys.youtube_keys = keys.youtube ? [keys.youtube] : [];
+  updated = true;
+}
+if (!keys.youtube_keys.includes(backupYoutubeKey)) {
+  keys.youtube_keys.push(backupYoutubeKey);
+  if (!keys.youtube) keys.youtube = backupYoutubeKey;
+  updated = true;
+}
+
 if (process.env.META_ACCESS_TOKEN && !keys.meta) { keys.meta = process.env.META_ACCESS_TOKEN; updated = true; }
 if (process.env.YOUTUBE_API_KEY && !keys.youtube) { keys.youtube = process.env.YOUTUBE_API_KEY; updated = true; }
 if (process.env.GEMINI_API_KEY && !keys.gemini) { keys.gemini = process.env.GEMINI_API_KEY; updated = true; }
@@ -569,8 +585,10 @@ async function startServer() {
       // Try to resolve ID if missing
       if (!platformAccountId) {
         console.log(`Realtime: Resolving handle for ${account.handle}...`);
+        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+        
         if (account.platform === 'YouTube') {
-          platformAccountId = await resolveYouTubeHandle(account.handle, apiKeys.youtube);
+          platformAccountId = await resolveYouTubeHandle(account.handle, youtubeKeys);
         } else if (account.platform === 'Instagram') {
           // Find a requester ID (any Instagram account with an ID)
           const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
@@ -593,14 +611,20 @@ async function startServer() {
       }
 
       if (!platformAccountId) {
-        return res.status(400).json({ error: "Could not resolve platform account ID. Please ensure the handle is correct and API keys are valid." });
+        return res.status(400).json({ 
+          error: "Could not resolve platform account ID automatically.",
+          suggestion: "Please manually enter the Platform Account ID (e.g., Channel ID for YouTube) in the Account Registry to bypass automatic resolution."
+        });
       }
 
       if (account.platform === 'YouTube') {
-        if (!apiKeys.youtube && !process.env.YOUTUBE_API_KEY) {
+        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+        const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
+        
+        if (!hasYoutube) {
           return res.status(400).json({ error: "YouTube API Key is missing. Please configure it in Settings." });
         }
-        metrics = await fetchYouTubeMetrics(platformAccountId, apiKeys.youtube);
+        metrics = await fetchYouTubeMetrics(platformAccountId, youtubeKeys);
       } else if (account.platform === 'Instagram') {
         if (!apiKeys.meta && !process.env.META_ACCESS_TOKEN) {
           return res.status(400).json({ error: "Meta Access Token is missing. Please configure it in Settings." });
@@ -647,12 +671,16 @@ async function startServer() {
     const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
     const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
     
+    const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+    const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
+
     const status = {
-      youtube: !!(apiKeys.youtube || process.env.YOUTUBE_API_KEY),
+      youtube: hasYoutube,
       meta: !!(apiKeys.meta || process.env.META_ACCESS_TOKEN),
       gemini: !!(apiKeys.gemini || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY),
       meta_expired: false,
-      youtube_invalid: false
+      youtube_invalid: false,
+      youtube_quota_hit: !!db.prepare("SELECT 1 FROM alerts WHERE type = 'system' AND message LIKE '%Quota%' AND status = 'pending'").get()
     };
 
     // Quick check for meta token expiration if it exists
@@ -694,8 +722,11 @@ async function startServer() {
         if (id) return res.json({ success: true, message: "Meta token is valid." });
         return res.status(400).json({ error: "Invalid Meta token or no linked Instagram Business account found." });
       } else if (type === 'youtube') {
-        // Try to resolve a common handle to test key
-        const id = await resolveYouTubeHandle('@youtube', key);
+        const keys = Array.isArray(key) ? key : String(key).split(',').map(k => k.trim()).filter(Boolean);
+        if (keys.length === 0) return res.status(400).json({ error: "No valid keys provided" });
+        
+        // Test the first key
+        const id = await resolveYouTubeHandle('@youtube', keys[0]);
         if (id) return res.json({ success: true, message: "YouTube API key is valid." });
         return res.status(400).json({ error: "Invalid YouTube API key." });
       } else if (type === 'gemini') {

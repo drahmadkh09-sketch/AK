@@ -21,95 +21,122 @@ export interface SocialMetrics {
   total_followers?: number;
   likes_7d?: number;
   dislikes_7d?: number;
+  profile_visits_7d?: number;
   recentVideos?: YouTubeVideo[];
 }
 
 /**
  * Fetch real YouTube metrics using the YouTube Data API.
- * Requires YOUTUBE_API_KEY and the channel's ID.
+ * Supports multiple API keys for rotation/fallback.
  */
-export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: string): Promise<SocialMetrics | null> {
-  const apiKey = providedApiKey || process.env.YOUTUBE_API_KEY;
-  if (!apiKey || !channelId) return null;
+export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: string | string[]): Promise<SocialMetrics | null> {
+  const apiKeys = Array.isArray(providedApiKey) 
+    ? providedApiKey 
+    : [providedApiKey || process.env.YOUTUBE_API_KEY].filter(Boolean) as string[];
 
-  try {
-    const youtube = google.youtube({ version: 'v3', auth: apiKey });
+  if (apiKeys.length === 0 || !channelId) return null;
 
-    // 1. Get channel statistics (for follower delta)
-    const channelRes = await youtube.channels.list({
-      part: ['statistics'],
-      id: [channelId],
-    });
-    const totalSubscribers = parseInt(channelRes.data.items?.[0]?.statistics?.subscriberCount || '0');
+  let lastError: any = null;
 
-    // 2. Get videos from the last 7 days
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  for (const apiKey of apiKeys) {
+    try {
+      const youtube = google.youtube({ version: 'v3', auth: apiKey });
 
-    const searchRes = await youtube.search.list({
-      part: ['id', 'snippet'],
-      channelId: channelId,
-      publishedAfter: sevenDaysAgo.toISOString(),
-      maxResults: 10,
-      type: ['video'],
-      order: 'date'
-    });
+      // 1. Get channel statistics (for follower delta)
+      const channelRes = await youtube.channels.list({
+        part: ['statistics'],
+        id: [channelId],
+      });
+      const totalSubscribers = parseInt(channelRes.data.items?.[0]?.statistics?.subscriberCount || '0');
 
-    const videoIds = searchRes.data.items?.map(item => item.id?.videoId).filter(Boolean) as string[];
-    const postCount = videoIds?.length || 0;
+      // 2. Get videos from the last 7 days
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    let totalViews = 0;
-    let totalLikes = 0;
-    let totalDislikes = 0;
-    const recentVideos: YouTubeVideo[] = [];
-    
-    if (videoIds.length > 0) {
-      const videoRes = await youtube.videos.list({
-        part: ['statistics', 'snippet'],
-        id: videoIds,
+      const searchRes = await youtube.search.list({
+        part: ['id', 'snippet'],
+        channelId: channelId,
+        publishedAfter: sevenDaysAgo.toISOString(),
+        maxResults: 10,
+        type: ['video'],
+        order: 'date'
       });
 
-      videoRes.data.items?.forEach(video => {
-        const views = parseInt(video.statistics?.viewCount || '0');
-        const likes = parseInt(video.statistics?.likeCount || '0');
-        const dislikes = parseInt((video.statistics as any)?.dislikeCount || '0');
-        
-        totalViews += views;
-        totalLikes += likes;
-        totalDislikes += dislikes;
+      const videoIds = searchRes.data.items?.map(item => item.id?.videoId).filter(Boolean) as string[];
+      const postCount = videoIds?.length || 0;
 
-        recentVideos.push({
-          id: video.id!,
-          title: video.snippet?.title || 'Untitled',
-          publishedAt: video.snippet?.publishedAt || '',
-          views,
-          likes,
-          dislikes,
-          thumbnail: video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
+      let totalViews = 0;
+      let totalLikes = 0;
+      let totalDislikes = 0;
+      const recentVideos: YouTubeVideo[] = [];
+      
+      if (videoIds.length > 0) {
+        const videoRes = await youtube.videos.list({
+          part: ['statistics', 'snippet'],
+          id: videoIds,
         });
-      });
-    }
 
-    return {
-      posts_per_day_7d: postCount / 7,
-      avg_reach_7d: postCount > 0 ? Math.floor(totalViews / postCount) : 0,
-      saves_7d: Math.floor(totalLikes * 0.1), // Proxy: YouTube doesn't have "saves" in public API
-      shares_7d: Math.floor(totalLikes * 0.05), // Proxy: YouTube doesn't have "shares" in public API
-      watch_time_7d: Math.floor(totalViews * 3), // Proxy: 3 mins avg watch time
-      follower_delta_7d: 0, 
-      total_followers: totalSubscribers,
-      likes_7d: totalLikes,
-      dislikes_7d: totalDislikes,
-      recentVideos
-    };
-  } catch (error: any) {
-    if (error.code === 403 || error.message?.includes('key')) {
-      console.warn('YouTube API: Invalid or missing API key.');
-    } else {
+        videoRes.data.items?.forEach(video => {
+          const views = parseInt(video.statistics?.viewCount || '0');
+          const likes = parseInt(video.statistics?.likeCount || '0');
+          const dislikes = parseInt((video.statistics as any)?.dislikeCount || '0');
+          
+          totalViews += views;
+          totalLikes += likes;
+          totalDislikes += dislikes;
+
+          recentVideos.push({
+            id: video.id!,
+            title: video.snippet?.title || 'Untitled',
+            publishedAt: video.snippet?.publishedAt || '',
+            views,
+            likes,
+            dislikes,
+            thumbnail: video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
+          });
+        });
+      }
+
+      return {
+        posts_per_day_7d: postCount / 7,
+        avg_reach_7d: postCount > 0 ? Math.floor(totalViews / postCount) : 0,
+        saves_7d: Math.floor(totalLikes * 0.1), // Proxy: YouTube doesn't have "saves" in public API
+        shares_7d: Math.floor(totalLikes * 0.05), // Proxy: YouTube doesn't have "shares" in public API
+        watch_time_7d: Math.floor(totalViews * 3), // Proxy: 3 mins avg watch time
+        follower_delta_7d: 0, 
+        total_followers: totalSubscribers,
+        likes_7d: totalLikes,
+        dislikes_7d: totalDislikes,
+        recentVideos
+      };
+    } catch (error: any) {
+      lastError = error;
+      const errorMsg = error.message?.toLowerCase() || "";
+      if (errorMsg.includes('quota') || error.code === 403) {
+        console.warn(`YouTube API: Quota hit or access denied for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
+        continue;
+      }
+      if (errorMsg.includes('key')) {
+        console.warn(`YouTube API: Invalid key ${apiKey.substring(0, 8)}... Trying next key if available.`);
+        continue;
+      }
       console.error('YouTube API Error:', error.message || error);
+      return null;
     }
-    return null;
   }
+
+  // If we reach here, all keys failed
+  if (lastError) {
+    const errorMsg = lastError.message?.toLowerCase() || "";
+    if (errorMsg.includes('quota')) {
+      throw new Error("YouTube API Quota Exceeded on all keys. Please wait for the quota to reset or add more API keys.");
+    }
+    if (lastError.code === 403) {
+      throw new Error("YouTube API Access Denied on all keys. Check your Google Cloud Console configuration.");
+    }
+    throw lastError;
+  }
+  return null;
 }
 
 /**
@@ -140,6 +167,15 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       }
     });
 
+    // 3. Get account insights (profile visits)
+    const insightsRes = await axios.get(`https://graph.facebook.com/v21.0/${instagramId}/insights`, {
+      params: {
+        metric: 'profile_views',
+        period: 'day',
+        access_token: accessToken,
+      }
+    });
+
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
@@ -159,6 +195,8 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       totalViews += insights.find((i: any) => i.name === 'video_views')?.values[0]?.value || 0;
     });
 
+    const profileVisits = insightsRes.data.data?.[0]?.values?.slice(-7).reduce((acc: number, curr: any) => acc + (curr.value || 0), 0) || 0;
+
     return {
       posts_per_day_7d: postCount / 7,
       avg_reach_7d: postCount > 0 ? Math.floor(totalReach / postCount) : 0,
@@ -167,7 +205,8 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       watch_time_7d: Math.floor(totalViews * 0.5), // Proxy: 30s avg watch time
       follower_delta_7d: 0,
       total_followers: totalFollowers,
-      likes_7d: totalLikes
+      likes_7d: totalLikes,
+      profile_visits_7d: profileVisits
     };
   } catch (error: any) {
     if (error.response?.data?.error?.code === 190 || error.message?.includes('expired')) {
@@ -182,38 +221,59 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
 /**
  * Resolve a YouTube handle (e.g., @avemariaradio) to a Channel ID.
  */
-export async function resolveYouTubeHandle(handle: string, providedApiKey?: string): Promise<string | null> {
-  const apiKey = providedApiKey || process.env.YOUTUBE_API_KEY;
-  if (!apiKey || !handle) return null;
+export async function resolveYouTubeHandle(handle: string, providedApiKey?: string | string[]): Promise<string | null> {
+  const apiKeys = Array.isArray(providedApiKey) 
+    ? providedApiKey 
+    : [providedApiKey || process.env.YOUTUBE_API_KEY].filter(Boolean) as string[];
+
+  if (apiKeys.length === 0 || !handle) return null;
 
   const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
+  let lastError: any = null;
 
-  try {
-    const youtube = google.youtube({ version: 'v3', auth: apiKey });
-    
-    // 1. Try resolving via handle (modern way)
-    const res = await youtube.channels.list({
-      part: ['id'],
-      forHandle: cleanHandle
-    });
+  for (const apiKey of apiKeys) {
+    try {
+      const youtube = google.youtube({ version: 'v3', auth: apiKey });
+      
+      // 1. Try resolving via handle (modern way)
+      const res = await youtube.channels.list({
+        part: ['id'],
+        forHandle: cleanHandle
+      });
 
-    if (res.data.items?.[0]?.id) {
-      return res.data.items[0].id;
+      if (res.data.items?.[0]?.id) {
+        return res.data.items[0].id;
+      }
+
+      // 2. Fallback: Search for the channel by handle name
+      const searchRes = await youtube.search.list({
+        part: ['id'],
+        q: handle,
+        type: ['channel'],
+        maxResults: 1
+      });
+
+      return searchRes.data.items?.[0]?.id?.channelId || null;
+    } catch (error: any) {
+      lastError = error;
+      const errorMsg = error.message?.toLowerCase() || "";
+      if (errorMsg.includes('quota') || error.code === 403) {
+        console.warn(`YouTube Resolve: Quota hit or access denied for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
+        continue;
+      }
+      console.error('YouTube Resolve Error:', error.message || error);
+      return null;
     }
-
-    // 2. Fallback: Search for the channel by handle name
-    const searchRes = await youtube.search.list({
-      part: ['id'],
-      q: handle,
-      type: ['channel'],
-      maxResults: 1
-    });
-
-    return searchRes.data.items?.[0]?.id?.channelId || null;
-  } catch (error) {
-    console.error('YouTube Resolve Error:', error);
-    return null;
   }
+
+  if (lastError) {
+    const errorMsg = lastError.message?.toLowerCase() || "";
+    if (errorMsg.includes('quota')) {
+      throw new Error("YouTube API Quota Exceeded on all keys. Automatic handle resolution failed. Please enter the Channel ID manually in the Account Registry.");
+    }
+    throw lastError;
+  }
+  return null;
 }
 
 /**

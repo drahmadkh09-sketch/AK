@@ -51,7 +51,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-function SystemStatusIndicator({ status, onNavigate }: { status: { youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean } | null, onNavigate: (tab: any) => void }) {
+function SystemStatusIndicator({ status, onNavigate }: { status: { youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean; youtube_quota_hit?: boolean } | null, onNavigate: (tab: any) => void }) {
   if (!status) return null;
 
   return (
@@ -59,11 +59,18 @@ function SystemStatusIndicator({ status, onNavigate }: { status: { youtube: bool
       <div className="flex items-center justify-between">
         <span className="text-[8px] font-black uppercase tracking-widest text-white/20">API Infrastructure</span>
         <div className="flex gap-1">
-          <div className={cn("w-1.5 h-1.5 rounded-full", status.youtube ? "bg-emerald-500" : "bg-red-500")} title="YouTube API" />
+          <div className={cn("w-1.5 h-1.5 rounded-full", status.youtube ? (status.youtube_quota_hit ? "bg-amber-500" : "bg-emerald-500") : "bg-red-500")} title="YouTube API" />
           <div className={cn("w-1.5 h-1.5 rounded-full", status.meta ? (status.meta_expired ? "bg-amber-500" : "bg-emerald-500") : "bg-red-500")} title="Meta API" />
           <div className={cn("w-1.5 h-1.5 rounded-full", status.gemini ? "bg-emerald-500" : "bg-red-500")} title="Gemini API" />
         </div>
       </div>
+      
+      {status.youtube_quota_hit && (
+        <div className="flex items-center gap-2 text-[8px] font-black uppercase tracking-tighter text-amber-400/80 leading-tight">
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />
+          <span>YouTube Quota Exceeded - Ingestion Paused</span>
+        </div>
+      )}
       
       {status.meta_expired && (
         <button 
@@ -650,32 +657,60 @@ function Overview({ accounts, auditLogs, insights, settings, alerts, scheduledPo
             color="emerald"
           />
         </div>
-        <div className="glass-card p-6 border-white/5 flex flex-col items-center justify-center">
-          <h4 className="text-[10px] font-black text-white/20 uppercase tracking-widest mb-4">Platform Distribution</h4>
-          <div className="h-32 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={platformData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={30}
-                  outerRadius={45}
-                  paddingAngle={5}
-                  dataKey="value"
-                >
-                  {platformData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#050505', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '10px' }}
-                  itemStyle={{ color: '#fff' }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+        <div className="glass-card p-6 border-white/5 flex flex-col">
+          <h4 className="text-[10px] font-black text-white/20 uppercase tracking-widest mb-6 text-center">Platform Distribution</h4>
+          
+          <div className="grid grid-cols-2 gap-4 flex-1">
+            <div className="h-32">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={platformData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={25}
+                    outerRadius={40}
+                    paddingAngle={5}
+                    dataKey="value"
+                  >
+                    {platformData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#050505', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '10px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="h-32">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={platformData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <XAxis 
+                    dataKey="name" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: 'rgba(255,255,255,0.2)', fontSize: 7, fontWeight: 900 }} 
+                    interval={0}
+                  />
+                  <Tooltip 
+                    cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                    contentStyle={{ backgroundColor: '#050505', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '10px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Bar dataKey="value" radius={[2, 2, 0, 0]} barSize={12}>
+                    {platformData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
-          <div className="flex flex-wrap justify-center gap-3 mt-2">
+
+          <div className="flex flex-wrap justify-center gap-3 mt-4">
             {platformData.map((p, i) => (
               <div key={p.name} className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
@@ -1357,10 +1392,26 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   const [selectedAccount, setSelectedAccount] = useState<number | null>(accounts[0]?.id || null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [realtimeData, setRealtimeData] = useState<any>(null);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
   const [videoSort, setVideoSort] = useState<'date' | 'views' | 'likes'>('date');
   const [videoFilter, setVideoFilter] = useState('');
+
+  const parseApiError = (error: any) => {
+    try {
+      const errorData = JSON.parse(error.message);
+      return {
+        message: errorData.error || "An unexpected error occurred",
+        suggestion: errorData.suggestion || null
+      };
+    } catch (e) {
+      return {
+        message: error.message || "An unexpected error occurred",
+        suggestion: null
+      };
+    }
+  };
 
   const fetchRealtime = async () => {
     if (!selectedAccount) return;
@@ -1369,9 +1420,11 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
     try {
       const data = await api.getRealtimeMetrics(selectedAccount);
       setRealtimeData(data);
+      setLastRefreshed(new Date());
     } catch (error: any) {
       console.error(error);
-      setRealtimeError(error.message || "Failed to fetch real-time data");
+      const parsed = parseApiError(error);
+      setRealtimeError(parsed.message + (parsed.suggestion ? ` ${parsed.suggestion}` : ""));
     } finally {
       setIsFetching(false);
     }
@@ -1381,8 +1434,9 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
     if (selectedAccount) {
       api.getMetrics(selectedAccount).then(setMetrics);
       setRealtimeData(null);
+      setLastRefreshed(null);
       const acc = accounts.find(a => a.id === selectedAccount);
-      if (acc?.platform === 'YouTube') {
+      if (acc?.platform === 'YouTube' || acc?.platform === 'Instagram') {
         fetchRealtime();
       }
     }
@@ -1390,9 +1444,9 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
 
   useEffect(() => {
     const acc = accounts.find(a => a.id === selectedAccount);
-    if (acc?.platform === 'YouTube' && selectedAccount) {
+    if ((acc?.platform === 'YouTube' || acc?.platform === 'Instagram') && selectedAccount) {
       const interval = setInterval(() => {
-        console.log(`Auto-refreshing YouTube metrics for @${acc.handle}...`);
+        console.log(`Auto-refreshing ${acc.platform} metrics for @${acc.handle}...`);
         fetchRealtime();
       }, 5 * 60 * 1000); // 5 minutes
       return () => clearInterval(interval);
@@ -1425,7 +1479,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
     });
 
   const chartData = [...baseChartData];
-  if (realtimeData && isYouTube) {
+  if (realtimeData && (isYouTube || selectedAccountData?.platform === 'Instagram')) {
     chartData.push({
       date: 'LIVE',
       reach: realtimeData.avg_reach_7d,
@@ -1433,7 +1487,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
       followers: realtimeData.follower_delta_7d,
       totalFollowers: realtimeData.total_followers,
       reach7d: realtimeData.avg_reach_7d * 7,
-      engagement7d: (realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0),
+      engagement7d: (realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0) + (realtimeData.saves_7d || 0),
       likes: realtimeData.likes_7d || 0,
       dislikes: realtimeData.dislikes_7d || 0
     });
@@ -1442,10 +1496,11 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   const latestMetric = metrics[0];
   
   // Display values (prefer realtime if available)
-  const displayReach7d = (isYouTube && realtimeData) ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
-  const displayEngagement7d = (isYouTube && realtimeData) ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0)) : (latestMetric?.engagement_7d || 0);
-  const displayLikes = (isYouTube && realtimeData) ? (realtimeData.likes_7d || 0) : (latestMetric?.likes_7d || 0);
+  const displayReach7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
+  const displayEngagement7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0) + (realtimeData.saves_7d || 0)) : (latestMetric?.engagement_7d || 0);
+  const displayLikes = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.likes_7d || 0) : (latestMetric?.likes_7d || 0);
   const displayDislikes = (isYouTube && realtimeData) ? (realtimeData.dislikes_7d || 0) : (latestMetric?.dislikes_7d || 0);
+  const displayProfileVisits = (selectedAccountData?.platform === 'Instagram' && realtimeData) ? (realtimeData.profile_visits_7d || 0) : 0;
 
   return (
     <div className="space-y-16">
@@ -1472,7 +1527,9 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                 className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full"
               >
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">Live API Data</span>
+                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">
+                  Live API Data {lastRefreshed && `• Updated ${format(lastRefreshed, 'HH:mm:ss')}`}
+                </span>
               </motion.div>
             )}
           </div>
@@ -1534,6 +1591,22 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
               <div>
                 <p className="text-2xl font-serif font-medium text-rose-400">{displayDislikes.toLocaleString()}</p>
                 <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Dislikes</p>
+              </div>
+            </div>
+          </div>
+        )}
+        {selectedAccountData?.platform === 'Instagram' && (
+          <div className="glass-card p-8 border-white/5">
+            <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Instagram Insights</h3>
+            <div className="flex items-end gap-4">
+              <div>
+                <p className="text-2xl font-serif font-medium text-emerald-400">{displayLikes.toLocaleString()}</p>
+                <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
+              </div>
+              <div className="h-8 w-[1px] bg-white/10 mb-1" />
+              <div>
+                <p className="text-2xl font-serif font-medium text-brand-primary">{displayProfileVisits.toLocaleString()}</p>
+                <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Profile Visits</p>
               </div>
             </div>
           </div>

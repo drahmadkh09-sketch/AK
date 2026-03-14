@@ -19,7 +19,7 @@ const handleResponse = async (res: Response, defaultError: string) => {
     } catch (e) {
       error = { error: text || res.statusText || defaultError };
     }
-    throw new Error(error.error || defaultError);
+    throw new Error(JSON.stringify(error));
   }
   return res.json();
 };
