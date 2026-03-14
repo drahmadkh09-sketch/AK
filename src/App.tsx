@@ -1812,7 +1812,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                     <p className="text-xs font-serif italic text-white line-clamp-2">{video.title}</p>
                   </div>
                 </div>
-                <div className="p-6 grid grid-cols-3 gap-4">
+                <div className="p-6 grid grid-cols-2 gap-4">
                   <div className="text-center">
                     <p className="text-lg font-serif font-medium text-white">{video.views.toLocaleString()}</p>
                     <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Views</p>
@@ -1820,6 +1820,10 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                   <div className="text-center">
                     <p className="text-lg font-serif font-medium text-emerald-400">{video.likes.toLocaleString()}</p>
                     <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-[10px] font-serif font-medium text-white/60">{format(new Date(video.publishedAt), 'MMM d, yyyy')}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Published</p>
                   </div>
                   <div className="text-center">
                     <p className="text-lg font-serif font-medium text-rose-400">{video.dislikes.toLocaleString()}</p>
