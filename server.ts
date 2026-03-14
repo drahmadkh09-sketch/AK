@@ -205,19 +205,7 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_destinations', '{"email": "admin@example.com", "slack": "", "whatsapp": ""}');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('thresholds', '{"reach_drop": 20, "cadence_gap_hours": 48}');
 
-  // Update API keys if provided in env
-  const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
-  let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
-  let updated = false;
-  if (process.env.META_ACCESS_TOKEN && !keys.meta) { keys.meta = process.env.META_ACCESS_TOKEN; updated = true; }
-  if (process.env.YOUTUBE_API_KEY && !keys.youtube) { keys.youtube = process.env.YOUTUBE_API_KEY; updated = true; }
-  if (process.env.GEMINI_API_KEY && !keys.gemini) { keys.gemini = process.env.GEMINI_API_KEY; updated = true; }
-  
-  if (updated) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('api_keys', ?)").run(JSON.stringify(keys));
-  }
-
-  // Seed initial accounts if empty
+  -- Seed initial accounts if empty
   INSERT OR IGNORE INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
   SELECT 'Instagram', 'dr_ray', 'https://instagram.com/dr_ray', 'Pod A', 'Backup A', 'active', 3, 'high'
   WHERE NOT EXISTS (SELECT 1 FROM accounts);
@@ -230,6 +218,18 @@ db.exec(`
   SELECT 'YouTube', 'fr_mike', 'https://youtube.com/fr_mike', 'Pod A', 'Backup B', 'active', 2, 'high'
   WHERE (SELECT COUNT(*) FROM accounts) = 2;
 `);
+
+// Update API keys if provided in env
+const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
+let updated = false;
+if (process.env.META_ACCESS_TOKEN && !keys.meta) { keys.meta = process.env.META_ACCESS_TOKEN; updated = true; }
+if (process.env.YOUTUBE_API_KEY && !keys.youtube) { keys.youtube = process.env.YOUTUBE_API_KEY; updated = true; }
+if (process.env.GEMINI_API_KEY && !keys.gemini) { keys.gemini = process.env.GEMINI_API_KEY; updated = true; }
+
+if (updated) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('api_keys', ?)").run(JSON.stringify(keys));
+}
 
 async function startServer() {
   const app = express();
@@ -564,15 +564,58 @@ async function startServer() {
 
     let metrics = null;
     try {
-      if (account.platform === 'YouTube' && account.platform_account_id) {
-        metrics = await fetchYouTubeMetrics(account.platform_account_id, apiKeys.youtube);
-      } else if (account.platform === 'Instagram' && account.platform_account_id) {
-        metrics = await fetchMetaMetrics(account.platform_account_id, apiKeys.meta);
+      let platformAccountId = account.platform_account_id;
+
+      // Try to resolve ID if missing
+      if (!platformAccountId) {
+        console.log(`Realtime: Resolving handle for ${account.handle}...`);
+        if (account.platform === 'YouTube') {
+          platformAccountId = await resolveYouTubeHandle(account.handle, apiKeys.youtube);
+        } else if (account.platform === 'Instagram') {
+          // Find a requester ID (any Instagram account with an ID)
+          const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
+          let requesterId = requester?.platform_account_id;
+          
+          if (!requesterId) {
+            // Fallback: try to get ID from token
+            requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+          }
+          
+          if (requesterId) {
+            platformAccountId = await resolveInstagramHandle(account.handle, requesterId, apiKeys.meta);
+          }
+        }
+        
+        if (platformAccountId) {
+          db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platformAccountId, account.id);
+          console.log(`Realtime: Resolved ${account.handle} to ${platformAccountId}`);
+        }
       }
+
+      if (!platformAccountId) {
+        return res.status(400).json({ error: "Could not resolve platform account ID. Please ensure the handle is correct and API keys are valid." });
+      }
+
+      if (account.platform === 'YouTube') {
+        if (!apiKeys.youtube && !process.env.YOUTUBE_API_KEY) {
+          return res.status(400).json({ error: "YouTube API Key is missing. Please configure it in Settings." });
+        }
+        metrics = await fetchYouTubeMetrics(platformAccountId, apiKeys.youtube);
+      } else if (account.platform === 'Instagram') {
+        if (!apiKeys.meta && !process.env.META_ACCESS_TOKEN) {
+          return res.status(400).json({ error: "Meta Access Token is missing. Please configure it in Settings." });
+        }
+        metrics = await fetchMetaMetrics(platformAccountId, apiKeys.meta);
+      }
+
+      if (!metrics) {
+        return res.status(500).json({ error: "Failed to fetch metrics from social platform. Check API key validity and quotas." });
+      }
+
       res.json(metrics);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Realtime metrics error:", error);
-      res.status(500).json({ error: "Failed to fetch realtime metrics" });
+      res.status(500).json({ error: error.message || "Failed to fetch realtime metrics" });
     }
   });
 

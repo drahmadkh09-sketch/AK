@@ -209,12 +209,21 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
+  const handleAuthError = (error: any) => {
+    if (error.message === 'Unauthorized') {
+      localStorage.removeItem('nio_auth');
+      localStorage.removeItem('nio_token');
+      setIsAuthenticated(false);
+    }
+  };
+
   const fetchSystemStatus = async () => {
     try {
       const status = await api.getSystemStatus();
       setSystemStatus(status);
     } catch (error) {
       console.error('Failed to fetch system status', error);
+      handleAuthError(error);
     }
   };
 
@@ -235,6 +244,7 @@ export default function App() {
       });
     } catch (error) {
       console.error('Failed to fetch ingestion status', error);
+      handleAuthError(error);
     }
   };
 
@@ -271,10 +281,7 @@ export default function App() {
       setReadyAssets(assets);
     } catch (error: any) {
       console.error('Failed to fetch data', error);
-      if (error.message === 'Unauthorized') {
-        localStorage.removeItem('nio_auth');
-        setIsAuthenticated(false);
-      }
+      handleAuthError(error);
     } finally {
       setLoading(false);
     }
@@ -284,7 +291,7 @@ export default function App() {
     switch (activeTab) {
       case 'overview': return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} alerts={alerts} scheduledPosts={scheduledPosts} readyAssets={readyAssets} onUpdate={fetchData} onNavigate={setActiveTab} />;
       case 'accounts': return <AccountRegistry accounts={accounts} onUpdate={fetchData} />;
-      case 'metrics': return <MetricsView accounts={accounts} />;
+      case 'metrics': return <MetricsView accounts={accounts} systemStatus={systemStatus} />;
       case 'audit': return <AuditLogInterface accounts={accounts} auditLogs={auditLogs} onUpdate={fetchData} />;
       case 'insights': return <InsightsFeed insights={insights} accounts={accounts} onUpdate={fetchData} />;
       case 'settings': return <SettingsPanel settings={settings} onUpdate={fetchData} />;
@@ -1057,12 +1064,28 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                   </p>
                 </td>
                 <td className="px-8 py-8 text-right">
-                  <button 
-                    onClick={() => setEditingAccount(a)}
-                    className="p-3 bg-white/5 rounded-xl text-white/20 hover:text-white hover:bg-white/10 transition-all"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
+                  <div className="flex items-center justify-end gap-3">
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await api.triggerAccountIngest(a.id);
+                          onUpdate();
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      }}
+                      title="Real-time Sync"
+                      className="p-3 bg-white/5 rounded-xl text-white/20 hover:text-emerald-500 hover:bg-white/10 transition-all"
+                    >
+                      <RefreshCw className="w-5 h-5" />
+                    </button>
+                    <button 
+                      onClick={() => setEditingAccount(a)}
+                      className="p-3 bg-white/5 rounded-xl text-white/20 hover:text-white hover:bg-white/10 transition-all"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -1330,20 +1353,25 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
   );
 }
 
-function MetricsView({ accounts }: { accounts: Account[] }) {
+function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemStatus: any }) {
   const [selectedAccount, setSelectedAccount] = useState<number | null>(accounts[0]?.id || null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [realtimeData, setRealtimeData] = useState<any>(null);
   const [isFetching, setIsFetching] = useState(false);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [videoSort, setVideoSort] = useState<'date' | 'views' | 'likes'>('date');
+  const [videoFilter, setVideoFilter] = useState('');
 
   const fetchRealtime = async () => {
     if (!selectedAccount) return;
     setIsFetching(true);
+    setRealtimeError(null);
     try {
       const data = await api.getRealtimeMetrics(selectedAccount);
       setRealtimeData(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
+      setRealtimeError(error.message || "Failed to fetch real-time data");
     } finally {
       setIsFetching(false);
     }
@@ -1360,6 +1388,17 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
     }
   }, [selectedAccount]);
 
+  useEffect(() => {
+    const acc = accounts.find(a => a.id === selectedAccount);
+    if (acc?.platform === 'YouTube' && selectedAccount) {
+      const interval = setInterval(() => {
+        console.log(`Auto-refreshing YouTube metrics for @${acc.handle}...`);
+        fetchRealtime();
+      }, 5 * 60 * 1000); // 5 minutes
+      return () => clearInterval(interval);
+    }
+  }, [selectedAccount, accounts]);
+
   const baseChartData = metrics.map(m => ({
     date: format(new Date(m.date), 'MMM dd'),
     reach: m.reach,
@@ -1374,6 +1413,16 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const isYouTube = selectedAccountData?.platform === 'YouTube';
+  const isKeyMissing = isYouTube ? !systemStatus?.youtube : !systemStatus?.meta;
+
+  const filteredVideos = (realtimeData?.recentVideos || [])
+    .filter((v: any) => v.title.toLowerCase().includes(videoFilter.toLowerCase()))
+    .sort((a: any, b: any) => {
+      if (videoSort === 'date') return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+      if (videoSort === 'views') return b.views - a.views;
+      if (videoSort === 'likes') return b.likes - a.likes;
+      return 0;
+    });
 
   const chartData = [...baseChartData];
   if (realtimeData && isYouTube) {
@@ -1403,22 +1452,62 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-6xl font-serif font-light luxury-text-gradient mb-2">Metrics Ingest</h1>
-          <p className="text-white/40 font-light tracking-wide">
-            Performance tracking and high-fidelity data pulls. 
-            {selectedAccountData?.last_ingest_ts && (
-              <span className="ml-4 text-emerald-500/60">Last Ingested: {format(new Date(selectedAccountData.last_ingest_ts), 'MMM d, HH:mm')}</span>
+          <div className="flex items-center gap-4">
+            <p className="text-white/40 font-light tracking-wide">
+              Performance tracking and high-fidelity data pulls. 
+              {selectedAccountData?.last_ingest_ts && (
+                <span className="ml-4 text-emerald-500/60">Last Ingested: {format(new Date(selectedAccountData.last_ingest_ts), 'MMM d, HH:mm')}</span>
+              )}
+            </p>
+            {isKeyMissing && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-rose-500/10 border border-rose-500/20 rounded-full">
+                <AlertCircle className="w-3 h-3 text-rose-500" />
+                <span className="text-[8px] font-black uppercase tracking-widest text-rose-400">API Key Missing</span>
+              </div>
             )}
-          </p>
+            {realtimeData && (
+              <motion.div 
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full"
+              >
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">Live API Data</span>
+              </motion.div>
+            )}
+          </div>
         </div>
-        <div className="relative">
-          <select 
-            className="p-4 pr-12 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all appearance-none min-w-[240px]"
-            value={selectedAccount || ''}
-            onChange={e => setSelectedAccount(Number(e.target.value))}
+        <div className="flex items-center gap-4">
+          {realtimeError && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-[10px] font-black uppercase tracking-widest animate-in fade-in slide-in-from-right-4">
+              <AlertCircle className="w-3 h-3" />
+              <span>{realtimeError}</span>
+              <button onClick={() => setRealtimeError(null)} className="ml-2 hover:text-white">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+          <div className="relative">
+            <select 
+              className="p-4 pr-12 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all appearance-none min-w-[240px]"
+              value={selectedAccount || ''}
+              onChange={e => setSelectedAccount(Number(e.target.value))}
+            >
+              {accounts.map(a => <option key={a.id} value={a.id} className="bg-[#050505]">@{a.handle} ({a.platform})</option>)}
+            </select>
+            <ChevronRight className="w-4 h-4 text-white/20 absolute right-4 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+          </div>
+          <button 
+            onClick={fetchRealtime}
+            disabled={isFetching || !selectedAccount}
+            title="Fetch Real-time Data"
+            className={cn(
+              "p-4 bg-white/5 border border-white/10 rounded-2xl text-white/40 hover:text-white hover:bg-white/10 transition-all",
+              isFetching && "animate-spin"
+            )}
           >
-            {accounts.map(a => <option key={a.id} value={a.id} className="bg-[#050505]">@{a.handle} ({a.platform})</option>)}
-          </select>
-          <ChevronRight className="w-4 h-4 text-white/20 absolute right-4 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
+            <RefreshCw className="w-5 h-5" />
+          </button>
         </div>
       </header>
 
@@ -1598,19 +1687,44 @@ function MetricsView({ accounts }: { accounts: Account[] }) {
 
       {isYouTube && realtimeData?.recentVideos && (
         <div className="space-y-8">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <h3 className="text-2xl font-serif font-medium">Recent Video Performance</h3>
-            <button 
-              onClick={fetchRealtime}
-              disabled={isFetching}
-              className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-brand-primary transition-colors"
-            >
-              <RefreshCw className={cn("w-3 h-3", isFetching && "animate-spin")} />
-              {isFetching ? 'Fetching...' : 'Refresh Realtime'}
-            </button>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="relative">
+                <input 
+                  type="text"
+                  placeholder="Filter videos..."
+                  value={videoFilter}
+                  onChange={e => setVideoFilter(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/20 min-w-[200px]"
+                />
+              </div>
+              <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl p-1">
+                {(['date', 'views', 'likes'] as const).map((sort) => (
+                  <button
+                    key={sort}
+                    onClick={() => setVideoSort(sort)}
+                    className={cn(
+                      "px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                      videoSort === sort ? "bg-brand-primary text-black" : "text-white/40 hover:text-white"
+                    )}
+                  >
+                    {sort}
+                  </button>
+                ))}
+              </div>
+              <button 
+                onClick={fetchRealtime}
+                disabled={isFetching}
+                className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-brand-primary transition-colors ml-2"
+              >
+                <RefreshCw className={cn("w-3 h-3", isFetching && "animate-spin")} />
+                {isFetching ? 'Fetching...' : 'Refresh Realtime'}
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {realtimeData.recentVideos.map((video: any) => (
+            {filteredVideos.map((video: any) => (
               <div key={video.id} className="glass-card overflow-hidden border-white/5 group hover:border-brand-primary/20 transition-all">
                 <div className="aspect-video relative overflow-hidden">
                   <img 

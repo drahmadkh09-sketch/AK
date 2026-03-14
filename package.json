@@ -10,6 +10,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "ingest": "tsx ingest.ts",
+    "update-data": "tsx update_data.ts",
     "start": "node server.ts"
   },
   "dependencies": {
