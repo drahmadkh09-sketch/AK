@@ -1445,10 +1445,11 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   useEffect(() => {
     const acc = accounts.find(a => a.id === selectedAccount);
     if ((acc?.platform === 'YouTube' || acc?.platform === 'Instagram') && selectedAccount) {
+      const refreshInterval = acc.platform === 'YouTube' ? 30 * 60 * 1000 : 5 * 60 * 1000;
       const interval = setInterval(() => {
         console.log(`Auto-refreshing ${acc.platform} metrics for @${acc.handle}...`);
         fetchRealtime();
-      }, 5 * 60 * 1000); // 5 minutes
+      }, refreshInterval);
       return () => clearInterval(interval);
     }
   }, [selectedAccount, accounts]);
