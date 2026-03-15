@@ -220,6 +220,7 @@ let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: 
 let updated = false;
 
 const backupYoutubeKey = "AIzaSyCnw-GPtjbP89Qv-2ppeEKOLAhT5MtRVEc";
+const backupYoutubeKey2 = "AIzaSyDaUPdWlOHqwGnw-usoKVNgTkyjhpVd5nY";
 const providedMetaToken = "EAAKZBgsx5Ei0BQ1P15Rt4pPd6dZBUwq6wyyfZAmdeKbj7NshnNUBmZBH0ar6mGmWpP9PpRH1KM1Wfnnwz3WiHYMIfc6A6nM5sWSDVh5q9PndQHYRtm3vJFEI0E3oDvlnBck5O7TA3Dgkl9yZB68VMYnCx1ox1yQZAz49IEprZACknOXYXOZA8JbG0eLHfN13At1195D5rlWQlNMQJbLVRzvx6BzXgQx4EoGKyLa3Yz7CdmfF";
 
 if (!keys.youtube_keys) {
@@ -229,6 +230,10 @@ if (!keys.youtube_keys) {
 if (!keys.youtube_keys.includes(backupYoutubeKey)) {
   keys.youtube_keys.push(backupYoutubeKey);
   if (!keys.youtube) keys.youtube = backupYoutubeKey;
+  updated = true;
+}
+if (!keys.youtube_keys.includes(backupYoutubeKey2)) {
+  keys.youtube_keys.push(backupYoutubeKey2);
   updated = true;
 }
 
@@ -611,7 +616,7 @@ async function startServer() {
       if (!platformAccountId) {
         return res.status(400).json({ 
           error: "Could not resolve platform account ID automatically.",
-          suggestion: "Please manually enter the Platform Account ID (e.g., Channel ID for YouTube) in the Account Registry to bypass automatic resolution."
+          suggestion: `Please manually enter the Platform Account ID (e.g., Channel ID starting with 'UC' for YouTube) in the Account Registry to bypass automatic resolution. Use the 'Find Channel ID' link in the registry for help.`
         });
       }
 

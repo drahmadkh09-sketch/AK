@@ -216,7 +216,7 @@ export async function ingest(db: any = dbInstance, accountId?: number) {
         } catch (err: any) {
           if (err.message?.includes('Quota')) {
             youtubeQuotaHit = true;
-            const msg = "YouTube API Quota Exceeded. Automatic handle resolution and data ingestion are paused for YouTube accounts. Please manually provide Channel IDs in the Account Registry to reduce API usage.";
+            const msg = "YouTube API Quota Exceeded. Automatic handle resolution and data ingestion are paused for YouTube accounts. Please manually provide Channel IDs (starting with 'UC') in the Account Registry to reduce API usage and bypass resolution.";
             db.prepare("INSERT INTO alerts (account_id, type, message, severity) VALUES (?, 'system', ?, 'high')").run(acc.id, msg);
             await sendNotification(db, msg, 'high');
           }

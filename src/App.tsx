@@ -51,6 +51,21 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const parseApiError = (error: any) => {
+  try {
+    const errorData = JSON.parse(error.message);
+    return {
+      message: errorData.error || "An unexpected error occurred",
+      suggestion: errorData.suggestion || null
+    };
+  } catch (e) {
+    return {
+      message: error.message || "An unexpected error occurred",
+      suggestion: null
+    };
+  }
+};
+
 function SystemStatusIndicator({ status, onNavigate }: { status: { youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean; youtube_quota_hit?: boolean } | null, onNavigate: (tab: any) => void }) {
   if (!status) return null;
 
@@ -227,11 +242,11 @@ export default function App() {
   const renderContent = () => {
     switch (activeTab) {
       case 'overview': return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} alerts={alerts} scheduledPosts={scheduledPosts} readyAssets={readyAssets} onUpdate={fetchData} onNavigate={setActiveTab} />;
-      case 'accounts': return <AccountRegistry accounts={accounts} onUpdate={fetchData} />;
+      case 'accounts': return <AccountRegistry accounts={accounts} onUpdate={fetchData} setToast={setToast} />;
       case 'metrics': return <MetricsView accounts={accounts} systemStatus={systemStatus} />;
       case 'audit': return <AuditLogInterface accounts={accounts} auditLogs={auditLogs} onUpdate={fetchData} />;
       case 'insights': return <InsightsFeed insights={insights} accounts={accounts} onUpdate={fetchData} />;
-      case 'settings': return <SettingsPanel settings={settings} onUpdate={fetchData} />;
+      case 'settings': return <SettingsPanel settings={settings} onUpdate={fetchData} systemStatus={systemStatus} />;
       case 'library': return <AssetLibrary readyAssets={readyAssets} onUpdate={fetchData} />;
       default: return <Overview accounts={accounts} auditLogs={auditLogs} insights={insights} settings={settings} alerts={alerts} scheduledPosts={scheduledPosts} readyAssets={readyAssets} onUpdate={fetchData} onNavigate={setActiveTab} />;
     }
@@ -841,7 +856,7 @@ function Overview({ accounts, auditLogs, insights, settings, alerts, scheduledPo
   );
 }
 
-function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate: () => void }) {
+function AccountRegistry({ accounts, onUpdate, setToast }: { accounts: Account[], onUpdate: () => void, setToast: (toast: { message: string; type: 'success' | 'error' } | null) => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -876,9 +891,17 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
           platform_account_id: id,
           profile_url: profileUrl
         }));
+        setToast({ message: 'Handle resolved successfully', type: 'success' });
+        setTimeout(() => setToast(null), 3000);
+      } else {
+        setToast({ message: 'Could not resolve handle automatically. Please enter ID manually.', type: 'error' });
+        setTimeout(() => setToast(null), 5000);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Resolution failed', error);
+      const parsed = parseApiError(error);
+      setToast({ message: parsed.message, type: 'error' });
+      setTimeout(() => setToast(null), 5000);
     } finally {
       setIsResolving(false);
     }
@@ -1102,11 +1125,23 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Platform Account ID</label>
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Platform Account ID</label>
+                    {newAccount.platform === 'YouTube' && (
+                      <a 
+                        href="https://commentpicker.com/youtube-channel-id.php" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[8px] font-black text-brand-primary uppercase tracking-widest hover:underline"
+                      >
+                        Find Channel ID
+                      </a>
+                    )}
+                  </div>
                   <input 
                     type="text" 
                     className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
-                    placeholder="ID for API (e.g. Channel ID)"
+                    placeholder={newAccount.platform === 'YouTube' ? "UC..." : "ID for API"}
                     value={newAccount.platform_account_id || ''}
                     onChange={e => setNewAccount({...newAccount, platform_account_id: e.target.value})}
                   />
@@ -1224,12 +1259,24 @@ function AccountRegistry({ accounts, onUpdate }: { accounts: Account[], onUpdate
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em] ml-1">Platform Account ID</label>
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="block text-[10px] font-black text-white/30 uppercase tracking-[0.3em]">Platform Account ID</label>
+                    {editingAccount.platform === 'YouTube' && (
+                      <a 
+                        href="https://commentpicker.com/youtube-channel-id.php" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[8px] font-black text-brand-primary uppercase tracking-widest hover:underline"
+                      >
+                        Find Channel ID
+                      </a>
+                    )}
+                  </div>
                   <input 
                     type="text" 
                     className="w-full p-4 bg-white/[0.03] border border-white/10 rounded-2xl text-sm text-white focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all placeholder:text-white/10"
                     value={editingAccount.platform_account_id || ''}
-                    placeholder="ID for API (e.g. Channel ID)"
+                    placeholder={editingAccount.platform === 'YouTube' ? "UC..." : "ID for API"}
                     onChange={e => setEditingAccount({...editingAccount, platform_account_id: e.target.value})}
                   />
                 </div>
@@ -1323,23 +1370,9 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [isAutoRefreshPaused, setIsAutoRefreshPaused] = useState(false);
   const [videoSort, setVideoSort] = useState<'date' | 'views' | 'likes'>('date');
   const [videoFilter, setVideoFilter] = useState('');
-
-  const parseApiError = (error: any) => {
-    try {
-      const errorData = JSON.parse(error.message);
-      return {
-        message: errorData.error || "An unexpected error occurred",
-        suggestion: errorData.suggestion || null
-      };
-    } catch (e) {
-      return {
-        message: error.message || "An unexpected error occurred",
-        suggestion: null
-      };
-    }
-  };
 
   const fetchRealtime = async () => {
     if (!selectedAccount) return;
@@ -1353,6 +1386,12 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
       console.error(error);
       const parsed = parseApiError(error);
       setRealtimeError(parsed.message + (parsed.suggestion ? ` ${parsed.suggestion}` : ""));
+      
+      // If quota exceeded, stop auto-refreshing for this session
+      if (parsed.message.toLowerCase().includes('quota')) {
+        console.warn('YouTube Quota Exceeded. Auto-refresh paused.');
+        setIsAutoRefreshPaused(true);
+      }
     } finally {
       setIsFetching(false);
     }
@@ -1363,6 +1402,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
       api.getMetrics(selectedAccount).then(setMetrics);
       setRealtimeData(null);
       setLastRefreshed(null);
+      setIsAutoRefreshPaused(false); // Reset pause on account change
       const acc = accounts.find(a => a.id === selectedAccount);
       if (acc?.platform === 'YouTube' || acc?.platform === 'Instagram') {
         fetchRealtime();
@@ -1372,7 +1412,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
 
   useEffect(() => {
     const acc = accounts.find(a => a.id === selectedAccount);
-    if ((acc?.platform === 'YouTube' || acc?.platform === 'Instagram') && selectedAccount) {
+    if ((acc?.platform === 'YouTube' || acc?.platform === 'Instagram') && selectedAccount && !isAutoRefreshPaused) {
       const refreshInterval = acc.platform === 'YouTube' ? 30 * 60 * 1000 : 5 * 60 * 1000;
       const interval = setInterval(() => {
         console.log(`Auto-refreshing ${acc.platform} metrics for @${acc.handle}...`);
@@ -1380,7 +1420,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
       }, refreshInterval);
       return () => clearInterval(interval);
     }
-  }, [selectedAccount, accounts]);
+  }, [selectedAccount, accounts, isAutoRefreshPaused]);
 
   const baseChartData = metrics.map(m => ({
     date: format(new Date(m.date), 'MMM dd'),
@@ -1427,6 +1467,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   // Display values (prefer realtime if available)
   const displayReach7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
   const displayEngagement7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0) + (realtimeData.saves_7d || 0)) : (latestMetric?.engagement_7d || 0);
+  const displayFollowers = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.total_followers || 0) : (latestMetric?.total_followers || 0);
   const displayLikes = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.likes_7d || 0) : (latestMetric?.likes_7d || 0);
   const displayDislikes = (isYouTube && realtimeData) ? (realtimeData.dislikes_7d || 0) : (latestMetric?.dislikes_7d || 0);
   const displayProfileVisits = (selectedAccountData?.platform === 'Instagram' && realtimeData) ? (realtimeData.profile_visits_7d || 0) : 0;
@@ -1499,8 +1540,13 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
         <div className="glass-card p-8 border-white/5">
+          <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Total Followers</h3>
+          <p className="text-4xl font-serif font-medium gold-text-gradient">{displayFollowers.toLocaleString()}</p>
+          <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Platform: {selectedAccountData?.platform}</p>
+        </div>
+        <div className="glass-card p-8 border-white/5">
           <h3 className="text-[10px] font-black text-white/20 uppercase tracking-[0.3em] mb-6">Reach (Last 7D)</h3>
-          <p className="text-4xl font-serif font-medium gold-text-gradient">{displayReach7d.toLocaleString()}</p>
+          <p className="text-4xl font-serif font-medium text-white">{displayReach7d.toLocaleString()}</p>
           <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mt-2">Daily Avg: {Math.round(displayReach7d / 7).toLocaleString()}</p>
         </div>
         <div className="glass-card p-8 border-white/5">
@@ -1540,13 +1586,6 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
             </div>
           </div>
         )}
-        <div className={cn("glass-card p-8 bg-brand-primary text-black border-none flex items-center justify-between", !isYouTube && "md:col-span-2")}>
-          <div>
-            <h3 className="text-[10px] font-black opacity-40 uppercase tracking-[0.3em] mb-2">System Health</h3>
-            <p className="text-2xl font-serif font-medium">Optimal</p>
-          </div>
-          <CheckCircle2 className="w-10 h-10 opacity-40" />
-        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
@@ -1687,10 +1726,10 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
         </div>
       </div>
 
-      {isYouTube && realtimeData?.recentVideos && (
+      {realtimeData?.recentVideos && (
         <div className="space-y-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <h3 className="text-2xl font-serif font-medium">Recent Video Performance</h3>
+            <h3 className="text-2xl font-serif font-medium">{isYouTube ? 'Recent Video Performance' : 'Recent Post Performance'}</h3>
             <div className="flex flex-wrap items-center gap-4">
               <div className="relative">
                 <input 
@@ -2672,7 +2711,7 @@ function InsightsFeed({ insights, accounts, onUpdate }: { insights: Insight[], a
   );
 }
 
-function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUpdate: () => void }) {
+function SettingsPanel({ settings, onUpdate, systemStatus }: { settings: Settings | null, onUpdate: () => void, systemStatus: { youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean; youtube_quota_hit?: boolean } | null }) {
   if (!settings) return null;
 
   const handleUpdate = async (key: string, value: any) => {
@@ -2686,6 +2725,29 @@ function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUp
         <h1 className="text-6xl font-serif font-light luxury-text-gradient mb-4">System Configuration</h1>
         <p className="text-white/40 font-light tracking-wide">Configure alert protocols and operational thresholds.</p>
       </header>
+
+      {systemStatus?.youtube_quota_hit && (
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="glass-card p-8 border-amber-500/20 bg-amber-500/5 flex items-center gap-6"
+        >
+          <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-amber-500">
+            <AlertCircle className="w-8 h-8" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-xl font-serif font-medium text-amber-400 mb-1">YouTube API Quota Exceeded</h3>
+            <p className="text-sm text-white/60 leading-relaxed">
+              The system has detected that your YouTube API quota has been exhausted. 
+              Real-time metrics and automated ingestion are currently paused to prevent further errors.
+              <br />
+              <span className="text-amber-400/80 font-bold mt-2 block">
+                Suggestion: Add more API keys (separated by commas) or wait for the daily reset (usually at midnight Pacific Time).
+              </span>
+            </p>
+          </div>
+        </motion.div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
         <section className="glass-card p-10 border-white/5 space-y-10">
@@ -2705,12 +2767,15 @@ function SettingsPanel({ settings, onUpdate }: { settings: Settings | null, onUp
               onTest={() => api.testKey('gemini', settings.api_keys?.gemini)}
             />
             <SettingsInput 
-              label="YouTube Data API Key" 
+              label="YouTube Data API Key(s)" 
               type="password"
               value={settings.api_keys?.youtube || ''} 
               onChange={v => handleUpdate('api_keys', { ...settings.api_keys, youtube: v })}
               onTest={() => api.testKey('youtube', settings.api_keys?.youtube)}
             />
+            <p className="text-[10px] text-white/20 uppercase tracking-widest ml-1 -mt-4">
+              Tip: You can enter multiple keys separated by commas to increase quota.
+            </p>
             <SettingsInput 
               label="Meta Access Token" 
               type="password"

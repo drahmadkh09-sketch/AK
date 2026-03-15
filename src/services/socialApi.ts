@@ -72,7 +72,7 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
       
       if (videoIds.length > 0) {
         const videoRes = await youtube.videos.list({
-          part: ['statistics', 'snippet'],
+          part: ['statistics', 'snippet', 'contentDetails'],
           id: videoIds,
         });
 
@@ -92,7 +92,7 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
             views,
             likes,
             dislikes,
-            thumbnail: video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
+            thumbnail: video.snippet?.thumbnails?.high?.url || video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
           });
         });
       }
@@ -112,8 +112,8 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message?.toLowerCase() || "";
-      if (errorMsg.includes('quota') || error.code === 403) {
-        console.warn(`YouTube API: Quota hit or access denied for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
+      if (errorMsg.includes('quota') || error.code === 403 || error.code === 429) {
+        console.warn(`YouTube API: Quota hit or rate limited for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
         continue;
       }
       if (errorMsg.includes('key')) {
@@ -128,8 +128,8 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
   // If we reach here, all keys failed
   if (lastError) {
     const errorMsg = lastError.message?.toLowerCase() || "";
-    if (errorMsg.includes('quota')) {
-      throw new Error("YouTube API Quota Exceeded on all keys. Please wait for the quota to reset or add more API keys.");
+    if (errorMsg.includes('quota') || lastError.code === 429) {
+      throw new Error("YouTube API Quota Exceeded on all keys. Please wait for the quota to reset (usually at midnight Pacific Time) or add more API keys in Settings.");
     }
     if (lastError.code === 403) {
       throw new Error("YouTube API Access Denied on all keys. Check your Google Cloud Console configuration.");
@@ -186,13 +186,30 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
     let totalSaves = 0;
     let totalViews = 0;
     let totalLikes = 0;
+    const recentVideos: YouTubeVideo[] = [];
 
     recentMedia.forEach((media: any) => {
       totalLikes += media.like_count || 0;
       const insights = media.insights?.data || [];
-      totalReach += insights.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
-      totalSaves += insights.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
-      totalViews += insights.find((i: any) => i.name === 'video_views')?.values[0]?.value || 0;
+      const reach = insights.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
+      const saved = insights.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
+      const views = insights.find((i: any) => i.name === 'video_views')?.values[0]?.value || 0;
+      
+      totalReach += reach;
+      totalSaves += saved;
+      totalViews += views;
+
+      if (media.media_type === 'VIDEO' || media.media_type === 'CAROUSEL' || media.media_type === 'IMAGE') {
+        recentVideos.push({
+          id: media.id,
+          title: media.caption || 'Instagram Post',
+          publishedAt: media.timestamp,
+          views: views || reach, // Use reach as fallback for non-video views
+          likes: media.like_count || 0,
+          dislikes: 0, // Instagram doesn't have dislikes
+          thumbnail: media.media_url || media.thumbnail_url || ''
+        });
+      }
     });
 
     const profileVisits = insightsRes.data.data?.[0]?.values?.slice(-7).reduce((acc: number, curr: any) => acc + (curr.value || 0), 0) || 0;
@@ -206,7 +223,8 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       follower_delta_7d: 0,
       total_followers: totalFollowers,
       likes_7d: totalLikes,
-      profile_visits_7d: profileVisits
+      profile_visits_7d: profileVisits,
+      recentVideos
     };
   } catch (error: any) {
     if (error.response?.data?.error?.code === 190 || error.message?.includes('expired')) {
@@ -257,8 +275,8 @@ export async function resolveYouTubeHandle(handle: string, providedApiKey?: stri
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message?.toLowerCase() || "";
-      if (errorMsg.includes('quota') || error.code === 403) {
-        console.warn(`YouTube Resolve: Quota hit or access denied for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
+      if (errorMsg.includes('quota') || error.code === 403 || error.code === 429) {
+        console.warn(`YouTube Resolve: Quota hit or rate limited for key ${apiKey.substring(0, 8)}... Trying next key if available.`);
         continue;
       }
       console.error('YouTube Resolve Error:', error.message || error);
@@ -268,8 +286,8 @@ export async function resolveYouTubeHandle(handle: string, providedApiKey?: stri
 
   if (lastError) {
     const errorMsg = lastError.message?.toLowerCase() || "";
-    if (errorMsg.includes('quota')) {
-      throw new Error("YouTube API Quota Exceeded on all keys. Automatic handle resolution failed. Please enter the Channel ID manually in the Account Registry.");
+    if (errorMsg.includes('quota') || lastError.code === 429) {
+      throw new Error("YouTube API Quota Exceeded on all keys. Automatic handle resolution failed. Please enter the Channel ID manually in the Account Registry to bypass this.");
     }
     throw lastError;
   }
