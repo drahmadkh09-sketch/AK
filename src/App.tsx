@@ -114,77 +114,10 @@ function Logo({ className = "w-10 h-10" }: { className?: string }) {
   );
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsVerifying(true);
-    try {
-      const isValid = await api.verifyToken(password);
-      if (isValid) {
-        localStorage.setItem('nio_auth', 'true');
-        localStorage.setItem('nio_token', password);
-        onLogin();
-      } else {
-        setError(true);
-        setTimeout(() => setError(false), 2000);
-      }
-    } catch (err) {
-      console.error('Verification failed', err);
-      setError(true);
-      setTimeout(() => setError(false), 2000);
-    } finally {
-      setIsVerifying(false);
-    }
-  };
-
-  return (
-    <div className="h-screen w-screen flex items-center justify-center bg-[#050505] relative overflow-hidden">
-      <BackgroundAnimation />
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="glass-card p-16 w-full max-w-md border-white/10 relative z-10 text-center"
-      >
-        <Logo className="w-24 h-24 mx-auto mb-10" />
-        <h1 className="text-4xl font-serif font-light luxury-text-gradient mb-4">Relay Access</h1>
-        <p className="text-white/40 text-sm mb-10 font-light tracking-wide">Enter shared credentials to initialize session.</p>
-        
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="relative group">
-            <input 
-              type="password" 
-              className={cn(
-                "w-full p-5 bg-white/[0.03] border rounded-2xl text-center text-sm tracking-[0.5em] focus:ring-2 focus:ring-brand-primary/20 outline-none transition-all",
-                error ? "border-rose-500/50 ring-2 ring-rose-500/20" : "border-white/10"
-              )}
-              placeholder="••••••••"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <button 
-            type="submit"
-            disabled={isVerifying}
-            className={cn(
-              "w-full py-5 bg-brand-primary text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.4em] hover:bg-brand-primary/90 transition-all shadow-2xl shadow-brand-primary/20",
-              isVerifying && "opacity-50 cursor-not-allowed"
-            )}
-          >
-            {isVerifying ? 'Verifying...' : 'Initialize'}
-          </button>
-        </form>
-      </motion.div>
-    </div>
-  );
-}
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(localStorage.getItem('nio_auth') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [showHero, setShowHero] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'metrics' | 'audit' | 'insights' | 'settings'>('overview');
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -217,11 +150,8 @@ export default function App() {
   }, [isAuthenticated]);
 
   const handleAuthError = (error: any) => {
-    if (error.message === 'Unauthorized') {
-      localStorage.removeItem('nio_auth');
-      localStorage.removeItem('nio_token');
-      setIsAuthenticated(false);
-    }
+    // Auth error handling disabled
+    console.error('Auth error:', error);
   };
 
   const fetchSystemStatus = async () => {
@@ -307,9 +237,7 @@ export default function App() {
     }
   };
 
-  if (!isAuthenticated) {
-    return <Login onLogin={() => setIsAuthenticated(true)} />;
-  }
+  // Authentication check removed
 
   return (
     <div className="relative h-screen overflow-hidden bg-[#050505] text-white/90 font-sans">

@@ -3,7 +3,7 @@ import { Account, Metric, AuditLog, Insight, Settings } from './types';
 const API_BASE = '/api';
 
 const getHeaders = () => {
-  const token = localStorage.getItem('nio_token') || 'NIO2026';
+  const token = localStorage.getItem('nio_token') || '';
   return {
     'Content-Type': 'application/json',
     'Authorization': token

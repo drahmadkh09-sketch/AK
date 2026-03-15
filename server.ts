@@ -77,16 +77,7 @@ async function checkCadenceGaps() {
   }
 }
 
-// Auth Middleware
-const AUTH_TOKEN = process.env.SHARED_AUTH_TOKEN || "NIO2026";
-const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const token = req.headers["authorization"] || req.query.token;
-  if (token === AUTH_TOKEN || token === `Bearer ${AUTH_TOKEN}`) {
-    next();
-  } else {
-    res.status(401).json({ error: "Unauthorized" });
-  }
-};
+// Auth Middleware removed
 
 // Initialize Database
 db.exec(`
@@ -265,8 +256,8 @@ async function startServer() {
 
   // Apply Auth Middleware to all /api routes except health
   apiRouter.use((req, res, next) => {
-    if (req.path === "/health" || req.path === "/health/") return next();
-    authMiddleware(req, res, next);
+    // Authentication disabled as per user request
+    next();
   });
 
   // --- API Routes ---
