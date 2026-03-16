@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
@@ -17,6 +16,7 @@ import {
 import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { Parser } from "json2csv";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -27,17 +27,17 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Ingestion Status Tracking
 let ingestionStatus = {
-  status: "idle", // "idle", "running", "success", "error"
+  status: "idle",
   lastRun: null as string | null,
   error: null as string | null
 };
 
 async function runIngestion() {
   if (ingestionStatus.status === "running") return;
-  
+
   ingestionStatus.status = "running";
   ingestionStatus.error = null;
-  
+
   try {
     await ingest(db);
     ingestionStatus.status = "success";
@@ -66,9 +66,8 @@ async function checkCadenceGaps() {
       const diffHours = (now.getTime() - lastPost.getTime()) / (1000 * 60 * 60);
 
       if (diffHours > gapHours) {
-        // Check if a pending alert already exists for this account and this gap
         const existingAlert = db.prepare(`
-          SELECT id FROM alerts 
+          SELECT id FROM alerts
           WHERE account_id = ? AND type = 'cadence_gap' AND status = 'pending'
         `).get(account.id);
 
@@ -87,15 +86,13 @@ async function checkCadenceGaps() {
   }
 }
 
-// Auth Middleware removed
-
 // Initialize Database
 db.exec(`
   CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
     handle TEXT NOT NULL,
-    platform_account_id TEXT, -- ID for Meta/YouTube API
+    platform_account_id TEXT,
     profile_url TEXT,
     pod_owner TEXT,
     backup_owner TEXT,
@@ -123,10 +120,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER,
-    type TEXT NOT NULL, -- 'cadence_gap', 'metric_drop', 'threshold_breach'
+    type TEXT NOT NULL,
     message TEXT NOT NULL,
     severity TEXT DEFAULT 'medium',
-    status TEXT DEFAULT 'pending', -- 'pending', 'resolved', 'ignored'
+    status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(account_id) REFERENCES accounts(id)
   );
@@ -135,9 +132,9 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER,
     platform TEXT NOT NULL,
-    content_type TEXT, -- 'Reel', 'Post', 'Story', 'Short'
+    content_type TEXT,
     scheduled_time DATETIME NOT NULL,
-    status TEXT DEFAULT 'scheduled', -- 'scheduled', 'deployed', 'failed'
+    status TEXT DEFAULT 'scheduled',
     caption TEXT,
     asset_url TEXT,
     FOREIGN KEY(account_id) REFERENCES accounts(id)
@@ -146,10 +143,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS ready_assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
-    type TEXT, -- 'Video', 'Image', 'Graphic'
+    type TEXT,
     url TEXT NOT NULL,
     thumbnail_url TEXT,
-    status TEXT DEFAULT 'ready', -- 'ready', 'used', 'archived'
+    status TEXT DEFAULT 'ready',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -166,39 +163,34 @@ db.exec(`
     reviewed BOOLEAN DEFAULT 0,
     FOREIGN KEY(account_id) REFERENCES accounts(id)
   );
-
-  -- Migration: Add reviewed column if it doesn't exist
-  -- We use a try-catch pattern in SQL or just ignore errors if it fails
-  -- For better-sqlite3, we can just run it and catch the error if it already exists
-  -- But here we'll just add it to the initial schema and also try to alter it
 `);
 
 try {
   db.exec("ALTER TABLE audit_logs ADD COLUMN reviewed BOOLEAN DEFAULT 0");
-} catch (e) {}
+} catch {}
 
 try {
   db.exec("ALTER TABLE account_metrics ADD COLUMN total_followers INTEGER");
-} catch (e) {}
+} catch {}
 
 try {
   db.exec("ALTER TABLE account_metrics ADD COLUMN likes_7d INTEGER");
-} catch (e) {}
+} catch {}
 
 try {
   db.exec("ALTER TABLE account_metrics ADD COLUMN dislikes_7d INTEGER");
-} catch (e) {}
+} catch {}
 
 try {
   db.exec("ALTER TABLE account_metrics ADD COLUMN profile_visits_7d INTEGER");
-} catch (e) {}
+} catch {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS insights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    tags TEXT -- JSON array of account IDs
+    tags TEXT
   );
 
   CREATE TABLE IF NOT EXISTS settings (
@@ -206,11 +198,9 @@ db.exec(`
     value TEXT
   );
 
-  -- Seed some initial settings if not present
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_destinations', '{"email": "admin@example.com", "slack": "", "whatsapp": ""}');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('thresholds', '{"reach_drop": 20, "cadence_gap_hours": 48}');
 
-  -- Seed initial accounts if empty
   INSERT OR IGNORE INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
   SELECT 'Instagram', 'dr_ray', 'https://instagram.com/dr_ray', 'Pod A', 'Backup A', 'active', 3, 'high'
   WHERE NOT EXISTS (SELECT 1 FROM accounts);
@@ -224,24 +214,23 @@ db.exec(`
   WHERE (SELECT COUNT(*) FROM accounts) = 2;
 `);
 
-// Add requested accounts
 const requestedAccounts = [
-  { handle: 'avemariaradio', platform: 'Instagram' },
-  { handle: 'dr.rayguarendi', platform: 'Instagram' },
-  { handle: 'dynamicdeacon', platform: 'Instagram' },
-  { handle: 'drmarcuspeter', platform: 'Instagram' },
-  { handle: 'livingbreadradio', platform: 'Instagram' },
-  { handle: 'yeabut40', platform: 'Instagram' },
-  { handle: 'trad_west_', platform: 'Instagram' },
-  { handle: 'cameron_riecker', platform: 'Instagram' },
-  { handle: '@AscensionPresents', platform: 'YouTube' },
-  { handle: '@CatholicAnswers', platform: 'YouTube' },
-  { handle: '@BishopBarron', platform: 'YouTube' },
-  { handle: '@PintsWithAquinas', platform: 'YouTube' },
-  { handle: '@TheCatholicTalkShow', platform: 'YouTube' },
-  { handle: '@WordOnFire', platform: 'YouTube' },
-  { handle: '@ThomisticInstitute', platform: 'YouTube' },
-  { handle: '@TheChosenSeries', platform: 'YouTube' }
+  { handle: "avemariaradio", platform: "Instagram" },
+  { handle: "dr.rayguarendi", platform: "Instagram" },
+  { handle: "dynamicdeacon", platform: "Instagram" },
+  { handle: "drmarcuspeter", platform: "Instagram" },
+  { handle: "livingbreadradio", platform: "Instagram" },
+  { handle: "yeabut40", platform: "Instagram" },
+  { handle: "trad_west_", platform: "Instagram" },
+  { handle: "cameron_riecker", platform: "Instagram" },
+  { handle: "@AscensionPresents", platform: "YouTube" },
+  { handle: "@CatholicAnswers", platform: "YouTube" },
+  { handle: "@BishopBarron", platform: "YouTube" },
+  { handle: "@PintsWithAquinas", platform: "YouTube" },
+  { handle: "@TheCatholicTalkShow", platform: "YouTube" },
+  { handle: "@WordOnFire", platform: "YouTube" },
+  { handle: "@ThomisticInstitute", platform: "YouTube" },
+  { handle: "@TheChosenSeries", platform: "YouTube" }
 ];
 
 for (const acc of requestedAccounts) {
@@ -250,42 +239,42 @@ for (const acc of requestedAccounts) {
     db.prepare(`
       INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
       VALUES (?, ?, ?, 'Pod A', 'Backup A', 'active', 3, 'medium')
-    `).run(acc.platform, acc.handle, `https://instagram.com/${acc.handle}`);
+    `).run(
+      acc.platform,
+      acc.handle,
+      acc.platform === "Instagram"
+        ? `https://instagram.com/${acc.handle}`
+        : `https://youtube.com/${acc.handle.replace(/^@/, "")}`
+    );
     console.log(`Seeded account: @${acc.handle} (${acc.platform})`);
   }
 }
 
-// Update API keys if provided in env
+// Load API keys only from env or settings
 const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
-let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
+let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", youtube_keys: [], gemini: "" };
 let updated = false;
 
-const backupYoutubeKey = "AIzaSyCnw-GPtjbP89Qv-2ppeEKOLAhT5MtRVEc";
-const backupYoutubeKey2 = "AIzaSyDaUPdWlOHqwGnw-usoKVNgTkyjhpVd5nY";
-const providedMetaToken = "EAAKZBgsx5Ei0BQ1P15Rt4pPd6dZBUwq6wyyfZAmdeKbj7NshnNUBmZBH0ar6mGmWpP9PpRH1KM1Wfnnwz3WiHYMIfc6A6nM5sWSDVh5q9PndQHYRtm3vJFEI0E3oDvlnBck5O7TA3Dgkl9yZB68VMYnCx1ox1yQZAz49IEprZACknOXYXOZA8JbG0eLHfN13At1195D5rlWQlNMQJbLVRzvx6BzXgQx4EoGKyLa3Yz7CdmfF";
-
-if (!keys.youtube_keys) {
+if (!Array.isArray(keys.youtube_keys)) {
   keys.youtube_keys = keys.youtube ? [keys.youtube] : [];
   updated = true;
 }
-if (!keys.youtube_keys.includes(backupYoutubeKey)) {
-  keys.youtube_keys.push(backupYoutubeKey);
-  if (!keys.youtube) keys.youtube = backupYoutubeKey;
-  updated = true;
-}
-if (!keys.youtube_keys.includes(backupYoutubeKey2)) {
-  keys.youtube_keys.push(backupYoutubeKey2);
-  updated = true;
-}
 
-if (providedMetaToken && keys.meta !== providedMetaToken) {
-  keys.meta = providedMetaToken;
+if (process.env.META_ACCESS_TOKEN && !keys.meta) {
+  keys.meta = process.env.META_ACCESS_TOKEN;
   updated = true;
 }
-
-if (process.env.META_ACCESS_TOKEN && !keys.meta) { keys.meta = process.env.META_ACCESS_TOKEN; updated = true; }
-if (process.env.YOUTUBE_API_KEY && !keys.youtube) { keys.youtube = process.env.YOUTUBE_API_KEY; updated = true; }
-if (process.env.GEMINI_API_KEY && !keys.gemini) { keys.gemini = process.env.GEMINI_API_KEY; updated = true; }
+if (process.env.YOUTUBE_API_KEY && !keys.youtube) {
+  keys.youtube = process.env.YOUTUBE_API_KEY;
+  if (!keys.youtube_keys.includes(process.env.YOUTUBE_API_KEY)) {
+    keys.youtube_keys.push(process.env.YOUTUBE_API_KEY);
+  }
+  updated = true;
+}
+if (process.env.GEMINI_API_KEY && !keys.gemini) {
+  keys.gemini = process.env.GEMINI_API_KEY;
+  updated = true;
+}
 
 if (updated) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('api_keys', ?)").run(JSON.stringify(keys));
@@ -293,45 +282,41 @@ if (updated) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
   const apiRouter = express.Router();
   const metricsCache = new Map<string, { data: any; timestamp: number }>();
-  const CACHE_TTL = 60 * 1000; // 1 minute cache for realtime metrics
-  
-  // Logging middleware for API requests
-  apiRouter.use((req, res, next) => {
+  const CACHE_TTL = 60 * 1000;
+
+  apiRouter.use((req, _res, next) => {
     console.log(`[API] ${req.method} ${req.path}`);
     next();
   });
 
-  // Apply Auth Middleware to all /api routes except health
-  apiRouter.use((req, res, next) => {
-    // Authentication disabled as per user request
+  apiRouter.use((_req, _res, next) => {
     next();
   });
 
-  // --- API Routes ---
-
-  // Health
-  apiRouter.get("/health", (req, res) => {
+  apiRouter.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
-  // Auth Verification
-  apiRouter.get("/auth/verify", (req, res) => {
+  apiRouter.get("/auth/verify", (_req, res) => {
     res.json({ success: true });
   });
 
-  // System Status
-  apiRouter.get("/system/status", async (req, res) => {
+  apiRouter.get("/system/status", async (_req, res) => {
     try {
       const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
       const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
-      
-      const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+
+      const youtubeKeys =
+        apiKeys.youtube_keys ||
+        (apiKeys.youtube ? [apiKeys.youtube] : []) ||
+        (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+
       const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
 
       const status = {
@@ -343,7 +328,6 @@ async function startServer() {
         youtube_quota_hit: !!db.prepare("SELECT 1 FROM alerts WHERE type = 'system' AND message LIKE '%Quota%' AND status = 'pending'").get()
       };
 
-      // Quick check for meta token expiration if it exists
       const metaToken = apiKeys.meta || process.env.META_ACCESS_TOKEN;
       if (metaToken) {
         try {
@@ -356,7 +340,7 @@ async function startServer() {
             }
           }
         } catch (e: any) {
-          if (e.response?.data?.error?.code === 190 || e.message?.includes('expired')) {
+          if (e.response?.data?.error?.code === 190 || e.message?.includes("expired")) {
             status.meta_expired = true;
             if (apiKeys.meta) {
               const newKeys = { ...apiKeys, meta: "" };
@@ -373,7 +357,6 @@ async function startServer() {
     }
   });
 
-  // Accounts
   apiRouter.get("/resolve-handle", async (req, res) => {
     const { platform, handle } = req.query;
     if (!platform || !handle) return res.status(400).json({ error: "Missing platform or handle" });
@@ -382,11 +365,14 @@ async function startServer() {
     const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
 
     try {
-      if (platform === 'YouTube') {
-        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+      if (platform === "YouTube") {
+        const youtubeKeys =
+          apiKeys.youtube_keys ||
+          (apiKeys.youtube ? [apiKeys.youtube] : []) ||
+          (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
         const id = await resolveYouTubeHandle(handle as string, youtubeKeys);
         return res.json({ id });
-      } else if (platform === 'Instagram') {
+      } else if (platform === "Instagram") {
         let requesterId = null;
         const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
         if (requester) {
@@ -395,11 +381,14 @@ async function startServer() {
           requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
         }
 
-        if (!requesterId) return res.status(400).json({ error: "No Instagram Business ID found to use for discovery. Please configure Meta API key correctly." });
-        
+        if (!requesterId) {
+          return res.status(400).json({ error: "No Instagram Business ID found to use for discovery. Please configure Meta API key correctly." });
+        }
+
         const id = await resolveInstagramHandle(handle as string, requesterId, apiKeys.meta);
         return res.json({ id });
       }
+
       res.status(400).json({ error: "Unsupported platform for resolution" });
     } catch (error) {
       console.error("Resolution error:", error);
@@ -407,35 +396,45 @@ async function startServer() {
     }
   });
 
-  apiRouter.get("/accounts", (req, res) => {
+  apiRouter.get("/accounts", (_req, res) => {
     const accounts = db.prepare("SELECT * FROM accounts").all();
     res.json(accounts);
   });
 
-  apiRouter.get("/accounts/export", (req, res) => {
+  apiRouter.get("/accounts/export", (_req, res) => {
     const accounts = db.prepare("SELECT * FROM accounts").all();
-    const fields = ['platform', 'handle', 'profile_url', 'pod_owner', 'backup_owner', 'status_tag', 'cadence_target_per_week', 'priority_level'];
+    const fields = ["platform", "handle", "profile_url", "pod_owner", "backup_owner", "status_tag", "cadence_target_per_week", "priority_level"];
     const parser = new Parser({ fields });
     const csv = parser.parse(accounts);
-    res.header('Content-Type', 'text/csv');
-    res.attachment('accounts.csv');
+    res.header("Content-Type", "text/csv");
+    res.attachment("accounts.csv");
     res.send(csv);
   });
 
-  apiRouter.post("/accounts/import", upload.single('file'), (req, res) => {
+  apiRouter.post("/accounts/import", upload.single("file"), (req, res) => {
     if (!(req as any).file) return res.status(400).json({ error: "No file uploaded" });
     const records = parse((req as any).file.buffer, { columns: true, skip_empty_lines: true });
     const stmt = db.prepare(`
       INSERT INTO accounts (platform, handle, platform_account_id, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const insertMany = db.transaction((rows) => {
+    const insertMany = db.transaction((rows: any[]) => {
       for (const row of rows) {
-        stmt.run(row.platform, row.handle, row.platform_account_id || null, row.profile_url, row.pod_owner, row.backup_owner, row.status_tag || 'active', row.cadence_target_per_week || 1, row.priority_level || 'medium');
+        stmt.run(
+          row.platform,
+          row.handle,
+          row.platform_account_id || null,
+          row.profile_url,
+          row.pod_owner,
+          row.backup_owner,
+          row.status_tag || "active",
+          row.cadence_target_per_week || 1,
+          row.priority_level || "medium"
+        );
       }
     });
-    insertMany(records);
-    res.json({ success: true, count: records.length });
+    insertMany(records as any[]);
+    res.json({ success: true, count: (records as any[]).length });
   });
 
   apiRouter.post("/accounts", (req, res) => {
@@ -450,7 +449,7 @@ async function startServer() {
   apiRouter.patch("/accounts/:id", (req, res) => {
     const { id } = req.params;
     const { status_tag, last_post_ts, platform_account_id, platform, handle, profile_url, pod_owner, backup_owner, priority_level, cadence_target_per_week } = req.body;
-    
+
     if (status_tag !== undefined) db.prepare("UPDATE accounts SET status_tag = ? WHERE id = ?").run(status_tag, id);
     if (last_post_ts !== undefined) db.prepare("UPDATE accounts SET last_post_ts = ? WHERE id = ?").run(last_post_ts, id);
     if (platform_account_id !== undefined) db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platform_account_id, id);
@@ -461,29 +460,28 @@ async function startServer() {
     if (backup_owner !== undefined) db.prepare("UPDATE accounts SET backup_owner = ? WHERE id = ?").run(backup_owner, id);
     if (priority_level !== undefined) db.prepare("UPDATE accounts SET priority_level = ? WHERE id = ?").run(priority_level, id);
     if (cadence_target_per_week !== undefined) db.prepare("UPDATE accounts SET cadence_target_per_week = ? WHERE id = ?").run(cadence_target_per_week, id);
-    
+
     res.json({ success: true });
   });
 
-  // Metrics
   apiRouter.get("/metrics/:accountId", (req, res) => {
     const metrics = db.prepare(`
-      SELECT 
-        id, 
-        account_id, 
-        timestamp as date, 
-        avg_reach_7d as reach, 
-        saves_7d as saves, 
-        shares_7d as shares, 
+      SELECT
+        id,
+        account_id,
+        timestamp as date,
+        avg_reach_7d as reach,
+        saves_7d as saves,
+        shares_7d as shares,
         follower_delta_7d as follower_delta,
         total_followers,
         avg_reach_7d as reach_7d,
         (saves_7d + shares_7d) as engagement_7d,
         likes_7d,
         dislikes_7d
-      FROM account_metrics 
-      WHERE account_id = ? 
-      ORDER BY timestamp DESC 
+      FROM account_metrics
+      WHERE account_id = ?
+      ORDER BY timestamp DESC
       LIMIT 30
     `).all(req.params.accountId);
     res.json(metrics);
@@ -498,12 +496,11 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Alerts
-  apiRouter.get("/alerts", (req, res) => {
+  apiRouter.get("/alerts", (_req, res) => {
     const alerts = db.prepare(`
-      SELECT al.*, a.handle, a.platform 
-      FROM alerts al 
-      JOIN accounts a ON al.account_id = a.id 
+      SELECT al.*, a.handle, a.platform
+      FROM alerts al
+      JOIN accounts a ON al.account_id = a.id
       WHERE al.status = 'pending'
       ORDER BY created_at DESC
     `).all();
@@ -517,12 +514,11 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Scheduled Posts
-  apiRouter.get("/scheduled-posts", (req, res) => {
+  apiRouter.get("/scheduled-posts", (_req, res) => {
     const posts = db.prepare(`
-      SELECT sp.*, a.handle 
-      FROM scheduled_posts sp 
-      JOIN accounts a ON sp.account_id = a.id 
+      SELECT sp.*, a.handle
+      FROM scheduled_posts sp
+      JOIN accounts a ON sp.account_id = a.id
       ORDER BY scheduled_time ASC
     `).all();
     res.json(posts);
@@ -540,12 +536,22 @@ async function startServer() {
   apiRouter.patch("/scheduled-posts/:id", (req, res) => {
     const { id } = req.params;
     const { status, scheduled_time, caption } = req.body;
-    const updates = [];
-    const values = [];
-    if (status) { updates.push("status = ?"); values.push(status); }
-    if (scheduled_time) { updates.push("scheduled_time = ?"); values.push(scheduled_time); }
-    if (caption) { updates.push("caption = ?"); values.push(caption); }
-    
+    const updates: string[] = [];
+    const values: any[] = [];
+
+    if (status) {
+      updates.push("status = ?");
+      values.push(status);
+    }
+    if (scheduled_time) {
+      updates.push("scheduled_time = ?");
+      values.push(scheduled_time);
+    }
+    if (caption) {
+      updates.push("caption = ?");
+      values.push(caption);
+    }
+
     if (updates.length > 0) {
       db.prepare(`UPDATE scheduled_posts SET ${updates.join(", ")} WHERE id = ?`).run(...values, id);
     }
@@ -557,30 +563,28 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Ready Assets
-  apiRouter.get("/ready-assets", (req, res) => {
+  apiRouter.get("/ready-assets", (_req, res) => {
     const assets = db.prepare("SELECT * FROM ready_assets WHERE status = 'ready' ORDER BY created_at DESC").all();
     res.json(assets);
   });
 
-  apiRouter.post("/ready-assets/upload", upload.single('file'), (req, res) => {
+  apiRouter.post("/ready-assets/upload", upload.single("file"), (req, res) => {
     if (!(req as any).file) return res.status(400).json({ error: "No file uploaded" });
     const records = parse((req as any).file.buffer, { columns: true, skip_empty_lines: true });
     const stmt = db.prepare(`
       INSERT INTO ready_assets (title, type, url, thumbnail_url)
       VALUES (?, ?, ?, ?)
     `);
-    const insertMany = db.transaction((rows) => {
+    const insertMany = db.transaction((rows: any[]) => {
       for (const row of rows) {
         stmt.run(row.title, row.type, row.url, row.thumbnail_url);
       }
     });
-    insertMany(records);
-    res.json({ success: true, count: records.length });
+    insertMany(records as any[]);
+    res.json({ success: true, count: (records as any[]).length });
   });
 
-  apiRouter.get("/external-assets", (req, res) => {
-    // Return empty list as real integration is not configured
+  apiRouter.get("/external-assets", (_req, res) => {
     res.json([]);
   });
 
@@ -606,12 +610,11 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Audit Logs
-  apiRouter.get("/audit-logs", (req, res) => {
+  apiRouter.get("/audit-logs", (_req, res) => {
     const logs = db.prepare(`
-      SELECT al.*, a.handle, a.platform 
-      FROM audit_logs al 
-      JOIN accounts a ON al.account_id = a.id 
+      SELECT al.*, a.handle, a.platform
+      FROM audit_logs al
+      JOIN accounts a ON al.account_id = a.id
       ORDER BY timestamp DESC
     `).all();
     res.json(logs);
@@ -632,18 +635,16 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid IDs" });
     }
 
-    const updates = Object.keys(data).map(key => `${key} = ?`).join(", ");
+    const updates = Object.keys(data).map((key) => `${key} = ?`).join(", ");
     const values = Object.values(data);
-    
     const placeholders = ids.map(() => "?").join(",");
     const stmt = db.prepare(`UPDATE audit_logs SET ${updates} WHERE id IN (${placeholders})`);
     stmt.run(...values, ...ids);
-    
+
     res.json({ success: true });
   });
 
-  // Insights
-  apiRouter.get("/insights", (req, res) => {
+  apiRouter.get("/insights", (_req, res) => {
     const insights = db.prepare("SELECT * FROM insights ORDER BY created_at DESC").all();
     res.json(insights);
   });
@@ -654,11 +655,14 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Settings
-  apiRouter.get("/settings", (req, res) => {
+  apiRouter.get("/settings", (_req, res) => {
     const settings = db.prepare("SELECT * FROM settings").all();
     const result = settings.reduce((acc: any, curr: any) => {
-      acc[curr.key] = JSON.parse(curr.value);
+      try {
+        acc[curr.key] = JSON.parse(curr.value);
+      } catch {
+        acc[curr.key] = curr.value;
+      }
       return acc;
     }, {});
     res.json(result);
@@ -672,10 +676,9 @@ async function startServer() {
 
   apiRouter.get("/accounts/:id/realtime-metrics", async (req, res) => {
     const { id } = req.params;
-    
-    // Check cache
+
     const cached = metricsCache.get(id);
-    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
       return res.json(cached.data);
     }
 
@@ -689,20 +692,20 @@ async function startServer() {
     try {
       let platformAccountId = account.platform_account_id;
 
-      // Try to resolve ID if missing
       if (!platformAccountId) {
         console.log(`Realtime: Resolving handle for ${account.handle}...`);
-        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
-        
-        if (account.platform === 'YouTube') {
+        const youtubeKeys =
+          apiKeys.youtube_keys ||
+          (apiKeys.youtube ? [apiKeys.youtube] : []) ||
+          (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+
+        if (account.platform === "YouTube") {
           platformAccountId = await resolveYouTubeHandle(account.handle, youtubeKeys);
-        } else if (account.platform === 'Instagram') {
-          // Find a requester ID (any Instagram account with an ID)
+        } else if (account.platform === "Instagram") {
           const requester = db.prepare("SELECT platform_account_id FROM accounts WHERE platform = 'Instagram' AND platform_account_id IS NOT NULL LIMIT 1").get() as any;
           let requesterId = requester?.platform_account_id;
-          
+
           if (!requesterId) {
-            // Fallback: try to get ID from token
             try {
               if (!apiKeys.meta) {
                 throw new Error("Meta Access Token is missing in settings.");
@@ -712,7 +715,7 @@ async function startServer() {
               console.error("Failed to get Instagram Business ID from token:", err.message);
             }
           }
-          
+
           if (requesterId) {
             platformAccountId = await resolveInstagramHandle(account.handle, requesterId, apiKeys.meta);
           } else {
@@ -722,7 +725,7 @@ async function startServer() {
             });
           }
         }
-        
+
         if (platformAccountId) {
           db.prepare("UPDATE accounts SET platform_account_id = ? WHERE id = ?").run(platformAccountId, account.id);
           console.log(`Realtime: Resolved ${account.handle} to ${platformAccountId}`);
@@ -730,21 +733,24 @@ async function startServer() {
       }
 
       if (!platformAccountId) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Could not resolve platform account ID automatically.",
-          suggestion: `Please manually enter the Platform Account ID (e.g., Channel ID starting with 'UC' for YouTube) in the Account Registry to bypass automatic resolution. Use the 'Find Channel ID' link in the registry for help.`
+          suggestion: "Please manually enter the Platform Account ID (e.g., Channel ID starting with 'UC' for YouTube) in the Account Registry to bypass automatic resolution. Use the 'Find Channel ID' link in the registry for help."
         });
       }
 
-      if (account.platform === 'YouTube') {
-        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+      if (account.platform === "YouTube") {
+        const youtubeKeys =
+          apiKeys.youtube_keys ||
+          (apiKeys.youtube ? [apiKeys.youtube] : []) ||
+          (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
         const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
-        
+
         if (!hasYoutube) {
           return res.status(400).json({ error: "YouTube API Key is missing. Please configure it in Settings." });
         }
         metrics = await fetchYouTubeMetrics(platformAccountId, youtubeKeys);
-      } else if (account.platform === 'Instagram') {
+      } else if (account.platform === "Instagram") {
         if (!apiKeys.meta && !process.env.META_ACCESS_TOKEN) {
           return res.status(400).json({ error: "Meta Access Token is missing. Please configure it in Settings." });
         }
@@ -755,7 +761,6 @@ async function startServer() {
         return res.status(500).json({ error: "Failed to fetch metrics from social platform. Check API key validity and quotas." });
       }
 
-      // Update cache
       metricsCache.set(id, { data: metrics, timestamp: Date.now() });
       res.json(metrics);
     } catch (error: any) {
@@ -764,13 +769,12 @@ async function startServer() {
     }
   });
 
-  // Ingestion Control
-  apiRouter.get("/ingest/status", (req, res) => {
+  apiRouter.get("/ingest/status", (_req, res) => {
     res.json(ingestionStatus);
   });
 
-  apiRouter.post("/ingest/trigger", (req, res) => {
-    runIngestion(); // Run in background
+  apiRouter.post("/ingest/trigger", (_req, res) => {
+    runIngestion();
     res.json({ success: true, message: "Ingestion triggered" });
   });
 
@@ -793,83 +797,76 @@ async function startServer() {
     if (!key) return res.status(400).json({ error: "Key is required" });
 
     try {
-      if (type === 'meta') {
+      if (type === "meta") {
         const id = await getInstagramBusinessIdFromToken(key);
         if (id) return res.json({ success: true, message: "Meta token is valid." });
         return res.status(400).json({ error: "Invalid Meta token or no linked Instagram Business account found." });
-      } else if (type === 'youtube') {
-        const keys = Array.isArray(key) ? key : String(key).split(',').map(k => k.trim()).filter(Boolean);
-        if (keys.length === 0) return res.status(400).json({ error: "No valid keys provided" });
-        
-        // Test the first key
-        const id = await resolveYouTubeHandle('@youtube', keys[0]);
+      } else if (type === "youtube") {
+        const keysToTest = Array.isArray(key) ? key : String(key).split(",").map((k) => k.trim()).filter(Boolean);
+        if (keysToTest.length === 0) return res.status(400).json({ error: "No valid keys provided" });
+
+        const id = await resolveYouTubeHandle("@youtube", keysToTest[0]);
         if (id) return res.json({ success: true, message: "YouTube API key is valid." });
         return res.status(400).json({ error: "Invalid YouTube API key." });
-      } else if (type === 'gemini') {
+      } else if (type === "gemini") {
         const result = await generateWithFallback("Respond with 'OK'", key);
         if (result) return res.json({ success: true, message: "Gemini API key is valid." });
         return res.status(400).json({ error: "Invalid Gemini API key or quota exceeded." });
       }
+
       res.status(400).json({ error: "Invalid test type" });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Test failed" });
     }
   });
 
-  // 404 for API routes
   apiRouter.use((req, res) => {
     res.status(404).json({ error: `API route ${req.originalUrl} not found` });
   });
 
   app.use("/api", apiRouter);
 
-  // --- Vite Middleware ---
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: "spa"
     });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  // --- Background Tasks ---
-
-  // Initial run on startup
   setTimeout(() => {
     runIngestion();
     checkCadenceGaps();
   }, 5000);
 
-  // Run every 6 hours
   setInterval(() => {
     runIngestion();
   }, 6 * 60 * 60 * 1000);
 
-  // Check cadence every hour
   setInterval(() => {
     checkCadenceGaps();
   }, 60 * 60 * 1000);
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
-// Global error handlers
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
 });
 
-startServer().catch(err => {
+startServer().catch((err) => {
   console.error("Failed to start server:", err);
 });
