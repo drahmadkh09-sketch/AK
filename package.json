@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && tsc server.ts --module nodenext --moduleResolution nodenext --target es2022 --outDir build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist build",
     "lint": "tsc --noEmit",
     "ingest": "tsx ingest.ts",
     "update-data": "tsx update_data.ts",
-    "start": "tsx server.ts"
+    "start": "node build/server.js"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
