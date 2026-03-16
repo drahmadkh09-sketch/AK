@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
-import { fetchMetaMetrics, fetchYouTubeMetrics, resolveYouTubeHandle, resolveInstagramHandle, SocialMetrics, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
+import { fetchMetaMetrics, fetchYouTubeMetrics, resolveYouTubeHandle, resolveInstagramHandle, SocialMetrics, getInstagramBusinessIdFromToken } from "./src/services/socialApi.js";
 
 dotenv.config({ override: true });
 
