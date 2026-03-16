@@ -132,8 +132,10 @@ function Logo({ className = "w-10 h-10" }: { className?: string }) {
 
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
-  const [showHero, setShowHero] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [showHero, setShowHero] = useState(true);
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'metrics' | 'audit' | 'insights' | 'settings'>('overview');
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -259,7 +261,66 @@ export default function App() {
       <BackgroundAnimation />
 
       <AnimatePresence mode="wait">
-        {showHero ? (
+        {!isAuthenticated ? (
+          <motion.div
+            key="login"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="relative z-50 h-full w-full flex items-center justify-center p-6"
+          >
+            <div className="max-w-md w-full glass-card p-12 border-white/10 space-y-8 text-center">
+              <Logo className="w-20 h-20 mx-auto mb-8" />
+              <div className="space-y-2">
+                <h2 className="text-4xl font-serif font-light luxury-text-gradient">Access Required</h2>
+                <p className="text-white/40 text-sm font-serif italic">Please enter the shared key to enter the relay.</p>
+              </div>
+
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const sharedKey = import.meta.env.VITE_SHARED_KEY || 'NIO2026';
+                  if (password === sharedKey) {
+                    setIsAuthenticated(true);
+                    setLoginError(false);
+                  } else {
+                    setLoginError(true);
+                  }
+                }}
+                className="space-y-6"
+              >
+                <div className="space-y-2">
+                  <input 
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter Shared Key"
+                    className={cn(
+                      "w-full bg-white/5 border rounded-2xl px-6 py-4 text-center text-lg tracking-[0.5em] outline-none transition-all",
+                      loginError ? "border-rose-500/50 focus:border-rose-500" : "border-white/10 focus:border-brand-primary/50"
+                    )}
+                  />
+                  {loginError && (
+                    <motion.p 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-rose-400 text-[10px] font-black uppercase tracking-widest"
+                    >
+                      Invalid Access Key
+                    </motion.p>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.4em] hover:bg-brand-primary transition-all active:scale-95 shadow-2xl"
+                >
+                  Authorize Access
+                </button>
+              </form>
+            </div>
+          </motion.div>
+        ) : showHero ? (
           <Hero onEnter={() => setShowHero(false)} />
         ) : (
           <motion.div 
