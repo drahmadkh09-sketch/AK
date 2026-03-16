@@ -1926,12 +1926,15 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                   <img 
                     src={video.thumbnail} 
                     alt={video.title} 
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
                     referrerPolicy="no-referrer"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                  <div className="absolute bottom-4 left-4 right-4">
-                    <p className="text-xs font-serif italic text-white line-clamp-2">{video.title}</p>
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-center items-center p-6 text-center backdrop-blur-sm">
+                    <p className="text-sm font-serif italic text-white mb-2 line-clamp-3">{video.title}</p>
+                    <div className="w-8 h-px bg-brand-primary/50 mb-2" />
+                    <p className="text-[10px] font-black uppercase tracking-widest text-brand-primary">
+                      {format(new Date(video.publishedAt), 'MMM d, yyyy')}
+                    </p>
                   </div>
                 </div>
                 <div className="p-6 grid grid-cols-2 gap-y-6 gap-x-4">
