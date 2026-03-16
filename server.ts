@@ -1,14 +1,24 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
-import { ingest, generateWithFallback } from "./ingest";
-import { fetchYouTubeMetrics, fetchMetaMetrics, resolveYouTubeHandle, resolveInstagramHandle, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
+
+import { ingest, generateWithFallback } from "./ingest.js";
+import {
+  fetchYouTubeMetrics,
+  fetchMetaMetrics,
+  resolveYouTubeHandle,
+  resolveInstagramHandle,
+  getInstagramBusinessIdFromToken
+} from "./src/services/socialApi.js";
 
 import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { Parser } from "json2csv";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config({ override: true });
 
