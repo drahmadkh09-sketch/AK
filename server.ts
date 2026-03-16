@@ -214,6 +214,37 @@ db.exec(`
   WHERE (SELECT COUNT(*) FROM accounts) = 2;
 `);
 
+// Add requested accounts
+const requestedAccounts = [
+  { handle: 'avemariaradio', platform: 'Instagram' },
+  { handle: 'dr.rayguarendi', platform: 'Instagram' },
+  { handle: 'dynamicdeacon', platform: 'Instagram' },
+  { handle: 'drmarcuspeter', platform: 'Instagram' },
+  { handle: 'livingbreadradio', platform: 'Instagram' },
+  { handle: 'yeabut40', platform: 'Instagram' },
+  { handle: 'trad_west_', platform: 'Instagram' },
+  { handle: 'cameron_riecker', platform: 'Instagram' },
+  { handle: '@AscensionPresents', platform: 'YouTube' },
+  { handle: '@CatholicAnswers', platform: 'YouTube' },
+  { handle: '@BishopBarron', platform: 'YouTube' },
+  { handle: '@PintsWithAquinas', platform: 'YouTube' },
+  { handle: '@TheCatholicTalkShow', platform: 'YouTube' },
+  { handle: '@WordOnFire', platform: 'YouTube' },
+  { handle: '@ThomisticInstitute', platform: 'YouTube' },
+  { handle: '@TheChosenSeries', platform: 'YouTube' }
+];
+
+for (const acc of requestedAccounts) {
+  const exists = db.prepare("SELECT 1 FROM accounts WHERE handle = ? AND platform = ?").get(acc.handle, acc.platform);
+  if (!exists) {
+    db.prepare(`
+      INSERT INTO accounts (platform, handle, profile_url, pod_owner, backup_owner, status_tag, cadence_target_per_week, priority_level)
+      VALUES (?, ?, ?, 'Pod A', 'Backup A', 'active', 3, 'medium')
+    `).run(acc.platform, acc.handle, `https://instagram.com/${acc.handle}`);
+    console.log(`Seeded account: @${acc.handle} (${acc.platform})`);
+  }
+}
+
 // Update API keys if provided in env
 const existingKeys = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
 let keys = existingKeys ? JSON.parse(existingKeys.value) : { meta: "", youtube: "", gemini: "" };
@@ -257,7 +288,14 @@ async function startServer() {
   app.use(express.json());
 
   const apiRouter = express.Router();
-  app.use("/api", apiRouter);
+  const metricsCache = new Map<string, { data: any; timestamp: number }>();
+  const CACHE_TTL = 60 * 1000; // 1 minute cache for realtime metrics
+  
+  // Logging middleware for API requests
+  apiRouter.use((req, res, next) => {
+    console.log(`[API] ${req.method} ${req.path}`);
+    next();
+  });
 
   // Apply Auth Middleware to all /api routes except health
   apiRouter.use((req, res, next) => {
@@ -277,6 +315,54 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // System Status
+  apiRouter.get("/system/status", async (req, res) => {
+    try {
+      const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
+      const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
+      
+      const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+      const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
+
+      const status = {
+        youtube: hasYoutube,
+        meta: !!(apiKeys.meta || process.env.META_ACCESS_TOKEN),
+        gemini: !!(apiKeys.gemini || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY),
+        meta_expired: false,
+        youtube_invalid: false,
+        youtube_quota_hit: !!db.prepare("SELECT 1 FROM alerts WHERE type = 'system' AND message LIKE '%Quota%' AND status = 'pending'").get()
+      };
+
+      // Quick check for meta token expiration if it exists
+      const metaToken = apiKeys.meta || process.env.META_ACCESS_TOKEN;
+      if (metaToken) {
+        try {
+          const id = await getInstagramBusinessIdFromToken(metaToken);
+          if (!id) {
+            status.meta_expired = true;
+            if (apiKeys.meta) {
+              const newKeys = { ...apiKeys, meta: "" };
+              db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
+            }
+          }
+        } catch (e: any) {
+          if (e.response?.data?.error?.code === 190 || e.message?.includes('expired')) {
+            status.meta_expired = true;
+            if (apiKeys.meta) {
+              const newKeys = { ...apiKeys, meta: "" };
+              db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
+            }
+          }
+        }
+      }
+
+      res.json(status);
+    } catch (error: any) {
+      console.error("System status error:", error);
+      res.status(500).json({ error: "Failed to fetch system status" });
+    }
+  });
+
   // Accounts
   apiRouter.get("/resolve-handle", async (req, res) => {
     const { platform, handle } = req.query;
@@ -287,7 +373,8 @@ async function startServer() {
 
     try {
       if (platform === 'YouTube') {
-        const id = await resolveYouTubeHandle(handle as string, apiKeys.youtube);
+        const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
+        const id = await resolveYouTubeHandle(handle as string, youtubeKeys);
         return res.json({ id });
       } else if (platform === 'Instagram') {
         let requesterId = null;
@@ -575,6 +662,13 @@ async function startServer() {
 
   apiRouter.get("/accounts/:id/realtime-metrics", async (req, res) => {
     const { id } = req.params;
+    
+    // Check cache
+    const cached = metricsCache.get(id);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+      return res.json(cached.data);
+    }
+
     const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as any;
     if (!account) return res.status(404).json({ error: "Account not found" });
 
@@ -599,11 +693,23 @@ async function startServer() {
           
           if (!requesterId) {
             // Fallback: try to get ID from token
-            requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+            try {
+              if (!apiKeys.meta) {
+                throw new Error("Meta Access Token is missing in settings.");
+              }
+              requesterId = await getInstagramBusinessIdFromToken(apiKeys.meta);
+            } catch (err: any) {
+              console.error("Failed to get Instagram Business ID from token:", err.message);
+            }
           }
           
           if (requesterId) {
             platformAccountId = await resolveInstagramHandle(account.handle, requesterId, apiKeys.meta);
+          } else {
+            return res.status(400).json({
+              error: "Instagram Business ID not found.",
+              suggestion: "To resolve Instagram handles, at least one Instagram account must have a manual Platform Account ID set in the Registry, or your Meta Access Token must be linked to a valid Instagram Business Account. You can manually enter the ID for this account using the 'Manual Entry Fix' button below."
+            });
           }
         }
         
@@ -639,6 +745,8 @@ async function startServer() {
         return res.status(500).json({ error: "Failed to fetch metrics from social platform. Check API key validity and quotas." });
       }
 
+      // Update cache
+      metricsCache.set(id, { data: metrics, timestamp: Date.now() });
       res.json(metrics);
     } catch (error: any) {
       console.error("Realtime metrics error:", error);
@@ -668,51 +776,6 @@ async function startServer() {
       console.error(`Ingestion failed for @${account.handle}:`, error);
       res.status(500).json({ error: error.message });
     }
-  });
-
-  apiRouter.get("/system/status", async (req, res) => {
-    const keysSetting = db.prepare("SELECT value FROM settings WHERE key = 'api_keys'").get() as any;
-    const apiKeys = keysSetting ? JSON.parse(keysSetting.value) : {};
-    
-    const youtubeKeys = apiKeys.youtube_keys || (apiKeys.youtube ? [apiKeys.youtube] : []) || (process.env.YOUTUBE_API_KEY ? [process.env.YOUTUBE_API_KEY] : []);
-    const hasYoutube = Array.isArray(youtubeKeys) ? youtubeKeys.length > 0 : !!youtubeKeys;
-
-    const status = {
-      youtube: hasYoutube,
-      meta: !!(apiKeys.meta || process.env.META_ACCESS_TOKEN),
-      gemini: !!(apiKeys.gemini || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY),
-      meta_expired: false,
-      youtube_invalid: false,
-      youtube_quota_hit: !!db.prepare("SELECT 1 FROM alerts WHERE type = 'system' AND message LIKE '%Quota%' AND status = 'pending'").get()
-    };
-
-    // Quick check for meta token expiration if it exists
-    const metaToken = apiKeys.meta || process.env.META_ACCESS_TOKEN;
-    if (metaToken) {
-      try {
-        const id = await getInstagramBusinessIdFromToken(metaToken);
-        console.log("Meta Token Health Check ID:", id);
-        if (!id) {
-          status.meta_expired = true;
-          // Clear from DB if it's there and invalid
-          if (apiKeys.meta) {
-            const newKeys = { ...apiKeys, meta: "" };
-            db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
-          }
-        }
-      } catch (e: any) {
-        if (e.response?.data?.error?.code === 190 || e.message?.includes('expired')) {
-          status.meta_expired = true;
-          // Clear from DB if it's there and expired
-          if (apiKeys.meta) {
-            const newKeys = { ...apiKeys, meta: "" };
-            db.prepare("UPDATE settings SET value = ? WHERE key = 'api_keys'").run(JSON.stringify(newKeys));
-          }
-        }
-      }
-    }
-
-    res.json(status);
   });
 
   apiRouter.post("/system/test-key", async (req, res) => {
@@ -747,6 +810,8 @@ async function startServer() {
   apiRouter.use((req, res) => {
     res.status(404).json({ error: `API route ${req.originalUrl} not found` });
   });
+
+  app.use("/api", apiRouter);
 
   // --- Vite Middleware ---
   if (process.env.NODE_ENV !== "production") {
@@ -786,4 +851,15 @@ async function startServer() {
   });
 }
 
-startServer();
+// Global error handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+startServer().catch(err => {
+  console.error("Failed to start server:", err);
+});

@@ -1370,9 +1370,35 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  const [isEditingId, setIsEditingId] = useState(false);
+  const [manualId, setManualId] = useState('');
   const [isAutoRefreshPaused, setIsAutoRefreshPaused] = useState(false);
-  const [videoSort, setVideoSort] = useState<'date' | 'views' | 'likes'>('date');
+  const [videoSort, setVideoSort] = useState<'date' | 'views' | 'likes' | 'comments' | 'shares'>('date');
   const [videoFilter, setVideoFilter] = useState('');
+  const [timeSinceRefresh, setTimeSinceRefresh] = useState<string>('');
+
+  // Sync selectedAccount if it's null but accounts are available
+  useEffect(() => {
+    if (!selectedAccount && accounts.length > 0) {
+      setSelectedAccount(accounts[0].id);
+    }
+  }, [accounts]);
+
+  // Update relative time for last refreshed
+  useEffect(() => {
+    if (!lastRefreshed) {
+      setTimeSinceRefresh('');
+      return;
+    }
+
+    const updateTimer = () => {
+      setTimeSinceRefresh(formatDistanceToNow(lastRefreshed, { addSuffix: true }));
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [lastRefreshed]);
 
   const fetchRealtime = async () => {
     if (!selectedAccount) return;
@@ -1392,6 +1418,27 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
         console.warn('YouTube Quota Exceeded. Auto-refresh paused.');
         setIsAutoRefreshPaused(true);
       }
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
+  const triggerFullIngest = async () => {
+    if (!selectedAccount) return;
+    setIsFetching(true);
+    try {
+      await api.triggerAccountIngest(selectedAccount);
+      await api.getMetrics(selectedAccount).then(setMetrics);
+      // Also try to get realtime if supported
+      const acc = accounts.find(a => a.id === selectedAccount);
+      if (acc?.platform === 'YouTube' || acc?.platform === 'Instagram') {
+        await fetchRealtime();
+      } else {
+        setLastRefreshed(new Date());
+      }
+    } catch (error: any) {
+      console.error(error);
+      setRealtimeError("Full ingestion failed. Check logs.");
     } finally {
       setIsFetching(false);
     }
@@ -1442,8 +1489,10 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
     .filter((v: any) => v.title.toLowerCase().includes(videoFilter.toLowerCase()))
     .sort((a: any, b: any) => {
       if (videoSort === 'date') return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
-      if (videoSort === 'views') return b.views - a.views;
-      if (videoSort === 'likes') return b.likes - a.likes;
+      if (videoSort === 'views') return (b.views || 0) - (a.views || 0);
+      if (videoSort === 'likes') return (b.likes || 0) - (a.likes || 0);
+      if (videoSort === 'comments') return (b.comments || 0) - (a.comments || 0);
+      if (videoSort === 'shares') return (b.shares || 0) - (a.shares || 0);
       return 0;
     });
 
@@ -1465,54 +1514,157 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
   const latestMetric = metrics[0];
   
   // Display values (prefer realtime if available)
-  const displayReach7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
-  const displayEngagement7d = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0) + (realtimeData.saves_7d || 0)) : (latestMetric?.engagement_7d || 0);
-  const displayFollowers = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.total_followers || 0) : (latestMetric?.total_followers || 0);
-  const displayLikes = ((isYouTube || selectedAccountData?.platform === 'Instagram') && realtimeData) ? (realtimeData.likes_7d || 0) : (latestMetric?.likes_7d || 0);
-  const displayDislikes = (isYouTube && realtimeData) ? (realtimeData.dislikes_7d || 0) : (latestMetric?.dislikes_7d || 0);
-  const displayProfileVisits = (selectedAccountData?.platform === 'Instagram' && realtimeData) ? (realtimeData.profile_visits_7d || 0) : 0;
+  const displayReach7d = realtimeData ? (realtimeData.avg_reach_7d * 7) : (latestMetric?.reach_7d || 0);
+  const displayEngagement7d = realtimeData ? ((realtimeData.likes_7d || 0) + (realtimeData.dislikes_7d || 0) + (realtimeData.saves_7d || 0)) : (latestMetric?.engagement_7d || 0);
+  const displayFollowers = realtimeData?.total_followers ?? latestMetric?.total_followers ?? 0;
+  const displayLikes = realtimeData?.likes_7d ?? latestMetric?.likes_7d ?? 0;
+  const displayDislikes = realtimeData?.dislikes_7d ?? latestMetric?.dislikes_7d ?? 0;
+  const displayProfileVisits = realtimeData?.profile_visits_7d ?? 0;
 
   return (
     <div className="space-y-16">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
           <h1 className="text-6xl font-serif font-light luxury-text-gradient mb-2">Metrics Ingest</h1>
           <div className="flex items-center gap-4">
-            <p className="text-white/40 font-light tracking-wide">
-              Performance tracking and high-fidelity data pulls. 
-              {selectedAccountData?.last_ingest_ts && (
-                <span className="ml-4 text-emerald-500/60">Last Ingested: {format(new Date(selectedAccountData.last_ingest_ts), 'MMM d, HH:mm')}</span>
+            <div className="space-y-1">
+              <p className="text-white/40 font-light tracking-wide">
+                Performance tracking and high-fidelity data pulls. 
+                {selectedAccountData?.last_ingest_ts && (
+                  <span className="ml-4 text-emerald-500/60">Last Ingested: {format(new Date(selectedAccountData.last_ingest_ts), 'MMM d, HH:mm')}</span>
+                )}
+              </p>
+              {isAutoRefreshPaused && (
+                <button 
+                  onClick={() => setIsAutoRefreshPaused(false)}
+                  className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded text-[8px] font-black uppercase tracking-widest text-amber-400 hover:bg-amber-500/20 transition-all"
+                >
+                  <AlertCircle className="w-2 h-2" />
+                  Auto-refresh Paused • Resume
+                </button>
               )}
-            </p>
+            </div>
             {isKeyMissing && (
               <div className="flex items-center gap-2 px-3 py-1 bg-rose-500/10 border border-rose-500/20 rounded-full">
                 <AlertCircle className="w-3 h-3 text-rose-500" />
                 <span className="text-[8px] font-black uppercase tracking-widest text-rose-400">API Key Missing</span>
               </div>
             )}
-            {realtimeData && (
-              <motion.div 
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full"
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">
-                  Live API Data {lastRefreshed && `• Updated ${format(lastRefreshed, 'HH:mm:ss')}`}
-                </span>
-              </motion.div>
-            )}
+            <div className="flex items-center gap-3">
+              {isFetching ? (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full"
+                >
+                  <RefreshCw className="w-2.5 h-2.5 text-amber-500 animate-spin" />
+                  <span className="text-[8px] font-black uppercase tracking-widest text-amber-400">Connecting...</span>
+                </motion.div>
+              ) : realtimeError ? (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1 bg-rose-500/10 border border-rose-500/20 rounded-full"
+                >
+                  <div className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  <span className="text-[8px] font-black uppercase tracking-widest text-rose-400">Disconnected</span>
+                </motion.div>
+              ) : realtimeData ? (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full"
+                >
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[8px] font-black uppercase tracking-widest text-emerald-400">
+                    Active • {timeSinceRefresh ? `Updated ${timeSinceRefresh}` : 'Live'}
+                  </span>
+                </motion.div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1 bg-white/5 border border-white/10 rounded-full">
+                  <div className="w-1.5 h-1.5 rounded-full bg-white/20" />
+                  <span className="text-[8px] font-black uppercase tracking-widest text-white/20">Standby</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-4">
           {realtimeError && (
-            <div className="flex items-center gap-2 px-4 py-2 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-[10px] font-black uppercase tracking-widest animate-in fade-in slide-in-from-right-4">
-              <AlertCircle className="w-3 h-3" />
-              <span>{realtimeError}</span>
-              <button onClick={() => setRealtimeError(null)} className="ml-2 hover:text-white">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-col gap-2 p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-400 text-[10px] font-black uppercase tracking-widest max-w-md shadow-2xl backdrop-blur-md"
+            >
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span className="flex-1" title={realtimeError}>{realtimeError}</span>
+                <button onClick={() => setRealtimeError(null)} className="ml-2 hover:text-white shrink-0">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              
+              {(realtimeError.includes('resolve platform account ID') || realtimeError.includes('Instagram Business ID not found')) && !isEditingId && (
+                <button 
+                  onClick={() => {
+                    setIsEditingId(true);
+                    setManualId('');
+                  }}
+                  className="mt-2 w-full py-2 bg-rose-500/20 hover:bg-rose-500/40 border border-rose-500/30 rounded-xl text-white transition-all"
+                >
+                  Manual Entry Fix
+                </button>
+              )}
+
+              {isEditingId && (
+                <div className="mt-2 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[8px] text-white/40">Enter Platform ID</span>
+                    {selectedAccountData?.platform === 'YouTube' && (
+                      <a 
+                        href="https://commentpicker.com/youtube-channel-id.php" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[8px] text-brand-primary hover:underline"
+                      >
+                        Find Channel ID
+                      </a>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text"
+                      value={manualId}
+                      onChange={e => setManualId(e.target.value)}
+                      placeholder={selectedAccountData?.platform === 'YouTube' ? "UC..." : "Account ID"}
+                      className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white outline-none focus:border-brand-primary/50 transition-all"
+                    />
+                    <button 
+                      onClick={async () => {
+                        if (!manualId || !selectedAccount) return;
+                        try {
+                          await api.updateAccount(selectedAccount, { platform_account_id: manualId });
+                          setIsEditingId(false);
+                          setRealtimeError(null);
+                          fetchRealtime();
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      }}
+                      className="px-4 bg-brand-primary text-black rounded-lg font-bold hover:bg-brand-primary/80 transition-all"
+                    >
+                      Save
+                    </button>
+                  </div>
+                  <button 
+                    onClick={() => setIsEditingId(false)}
+                    className="w-full py-1 text-[8px] text-white/20 hover:text-white/40 uppercase tracking-widest"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </motion.div>
           )}
           <div className="relative">
             <select 
@@ -1525,15 +1677,18 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
             <ChevronRight className="w-4 h-4 text-white/20 absolute right-4 top-1/2 -translate-y-1/2 rotate-90 pointer-events-none" />
           </div>
           <button 
-            onClick={fetchRealtime}
+            onClick={selectedAccountData?.platform === 'YouTube' || selectedAccountData?.platform === 'Instagram' ? fetchRealtime : triggerFullIngest}
             disabled={isFetching || !selectedAccount}
-            title="Fetch Real-time Data"
+            title={selectedAccountData?.platform === 'YouTube' || selectedAccountData?.platform === 'Instagram' ? "Fetch Real-time Data" : "Trigger Full Ingestion"}
             className={cn(
-              "p-4 bg-white/5 border border-white/10 rounded-2xl text-white/40 hover:text-white hover:bg-white/10 transition-all",
-              isFetching && "animate-spin"
+              "p-4 bg-white/5 border border-white/10 rounded-2xl text-white/40 hover:text-white hover:bg-white/10 transition-all flex items-center gap-3",
+              isFetching && "animate-pulse"
             )}
           >
-            <RefreshCw className="w-5 h-5" />
+            <RefreshCw className={cn("w-5 h-5", isFetching && "animate-spin")} />
+            <span className="text-[10px] font-black uppercase tracking-widest hidden md:block">
+              {isFetching ? 'Refreshing...' : 'Refresh'}
+            </span>
           </button>
         </div>
       </header>
@@ -1741,7 +1896,7 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                 />
               </div>
               <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl p-1">
-                {(['date', 'views', 'likes'] as const).map((sort) => (
+                {(['date', 'views', 'likes', 'comments', 'shares'] as const).map((sort) => (
                   <button
                     key={sort}
                     onClick={() => setVideoSort(sort)}
@@ -1755,12 +1910,12 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                 ))}
               </div>
               <button 
-                onClick={fetchRealtime}
+                onClick={selectedAccountData?.platform === 'YouTube' || selectedAccountData?.platform === 'Instagram' ? fetchRealtime : triggerFullIngest}
                 disabled={isFetching}
                 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-brand-primary transition-colors ml-2"
               >
                 <RefreshCw className={cn("w-3 h-3", isFetching && "animate-spin")} />
-                {isFetching ? 'Fetching...' : 'Refresh Realtime'}
+                {isFetching ? 'Refreshing...' : 'Refresh Realtime'}
               </button>
             </div>
           </div>
@@ -1779,22 +1934,26 @@ function MetricsView({ accounts, systemStatus }: { accounts: Account[], systemSt
                     <p className="text-xs font-serif italic text-white line-clamp-2">{video.title}</p>
                   </div>
                 </div>
-                <div className="p-6 grid grid-cols-2 gap-4">
+                <div className="p-6 grid grid-cols-2 gap-y-6 gap-x-4">
                   <div className="text-center">
-                    <p className="text-lg font-serif font-medium text-white">{video.views.toLocaleString()}</p>
+                    <p className="text-lg font-serif font-medium text-white">{(video.views || 0).toLocaleString()}</p>
                     <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Views</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-lg font-serif font-medium text-emerald-400">{video.likes.toLocaleString()}</p>
+                    <p className="text-lg font-serif font-medium text-emerald-400">{(video.likes || 0).toLocaleString()}</p>
                     <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Likes</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-[10px] font-serif font-medium text-white/60">{format(new Date(video.publishedAt), 'MMM d, yyyy')}</p>
-                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Published</p>
+                    <p className="text-lg font-serif font-medium text-brand-primary">{(video.comments || 0).toLocaleString()}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Comments</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-lg font-serif font-medium text-rose-400">{video.dislikes.toLocaleString()}</p>
-                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Dislikes</p>
+                    <p className="text-lg font-serif font-medium text-amber-400">{(video.shares || 0).toLocaleString()}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Shares</p>
+                  </div>
+                  <div className="text-center col-span-2 pt-2 border-t border-white/5">
+                    <p className="text-[10px] font-serif font-medium text-white/60">{format(new Date(video.publishedAt), 'MMM d, yyyy')}</p>
+                    <p className="text-[8px] font-black text-white/20 uppercase tracking-widest">Published</p>
                   </div>
                 </div>
               </div>

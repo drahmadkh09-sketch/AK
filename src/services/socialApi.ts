@@ -8,6 +8,8 @@ export interface YouTubeVideo {
   views: number;
   likes: number;
   dislikes: number;
+  comments: number;
+  shares: number;
   thumbnail: string;
 }
 
@@ -80,6 +82,8 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
           const views = parseInt(video.statistics?.viewCount || '0');
           const likes = parseInt(video.statistics?.likeCount || '0');
           const dislikes = parseInt((video.statistics as any)?.dislikeCount || '0');
+          const comments = parseInt(video.statistics?.commentCount || '0');
+          const shares = Math.floor(likes * 0.05); // Proxy for shares
           
           totalViews += views;
           totalLikes += likes;
@@ -92,6 +96,8 @@ export async function fetchYouTubeMetrics(channelId: string, providedApiKey?: st
             views,
             likes,
             dislikes,
+            comments,
+            shares,
             thumbnail: video.snippet?.thumbnails?.high?.url || video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || ''
           });
         });
@@ -194,6 +200,8 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
       const reach = insights.find((i: any) => i.name === 'reach')?.values[0]?.value || 0;
       const saved = insights.find((i: any) => i.name === 'saved')?.values[0]?.value || 0;
       const views = insights.find((i: any) => i.name === 'video_views')?.values[0]?.value || 0;
+      const comments = media.comments_count || 0;
+      const shares = Math.floor((media.like_count || 0) * 0.1); // Proxy for shares
       
       totalReach += reach;
       totalSaves += saved;
@@ -207,6 +215,8 @@ export async function fetchMetaMetrics(instagramId: string, providedAccessToken?
           views: views || reach, // Use reach as fallback for non-video views
           likes: media.like_count || 0,
           dislikes: 0, // Instagram doesn't have dislikes
+          comments,
+          shares,
           thumbnail: media.media_url || media.thumbnail_url || ''
         });
       }
@@ -246,7 +256,17 @@ export async function resolveYouTubeHandle(handle: string, providedApiKey?: stri
 
   if (apiKeys.length === 0 || !handle) return null;
 
-  const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
+  // Sanitize handle: remove URL parts if present
+  let cleanHandle = handle.trim();
+  if (cleanHandle.includes('youtube.com/')) {
+    const parts = cleanHandle.split('/');
+    cleanHandle = parts[parts.length - 1];
+  }
+  
+  // Ensure it starts with @ for forHandle
+  const handleWithAt = cleanHandle.startsWith('@') ? cleanHandle : `@${cleanHandle}`;
+  const handleWithoutAt = cleanHandle.startsWith('@') ? cleanHandle.substring(1) : cleanHandle;
+
   let lastError: any = null;
 
   for (const apiKey of apiKeys) {
@@ -256,22 +276,34 @@ export async function resolveYouTubeHandle(handle: string, providedApiKey?: stri
       // 1. Try resolving via handle (modern way)
       const res = await youtube.channels.list({
         part: ['id'],
-        forHandle: cleanHandle
+        forHandle: handleWithAt
       });
 
       if (res.data.items?.[0]?.id) {
         return res.data.items[0].id;
       }
 
-      // 2. Fallback: Search for the channel by handle name
+      // 2. Fallback: Try search with the handle
       const searchRes = await youtube.search.list({
+        part: ['id'],
+        q: handleWithoutAt,
+        type: ['channel'],
+        maxResults: 1
+      });
+
+      if (searchRes.data.items?.[0]?.id?.channelId) {
+        return searchRes.data.items[0].id.channelId;
+      }
+
+      // 3. Last ditch: Try search with the original handle string
+      const searchRes2 = await youtube.search.list({
         part: ['id'],
         q: handle,
         type: ['channel'],
         maxResults: 1
       });
 
-      return searchRes.data.items?.[0]?.id?.channelId || null;
+      return searchRes2.data.items?.[0]?.id?.channelId || null;
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message?.toLowerCase() || "";
@@ -302,7 +334,15 @@ export async function resolveInstagramHandle(handle: string, requesterBusinessId
   const accessToken = providedAccessToken || process.env.META_ACCESS_TOKEN;
   if (!accessToken || !handle || !requesterBusinessId) return null;
 
-  const cleanHandle = handle.startsWith('@') ? handle.substring(1) : handle;
+  // Sanitize handle: remove URL parts if present
+  let cleanHandle = handle.trim();
+  if (cleanHandle.includes('instagram.com/')) {
+    const parts = cleanHandle.split('/');
+    cleanHandle = parts[parts.length - 1].split('?')[0]; // Remove query params too
+  }
+  
+  // Remove @ if present
+  cleanHandle = cleanHandle.startsWith('@') ? cleanHandle.substring(1) : cleanHandle;
 
   try {
     const res = await axios.get(`https://graph.facebook.com/v21.0/${requesterBusinessId}`, {

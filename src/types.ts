@@ -2,6 +2,7 @@ export interface Account {
   id: number;
   platform: string;
   handle: string;
+  platform_account_id?: string;
   profile_url: string;
   pod_owner: string;
   backup_owner: string;

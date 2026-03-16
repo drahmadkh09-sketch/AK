@@ -10,6 +10,20 @@ const getHeaders = () => {
   };
 };
 
+const fetchWithRetry = async (url: string, options: RequestInit, retries = 2, backoff = 1000): Promise<Response> => {
+  try {
+    const res = await fetch(url, options);
+    return res;
+  } catch (err) {
+    if (retries > 0) {
+      console.warn(`Fetch failed for ${url}, retrying in ${backoff}ms...`, err);
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      return fetchWithRetry(url, options, retries - 1, backoff * 2);
+    }
+    throw err;
+  }
+};
+
 const handleResponse = async (res: Response, defaultError: string) => {
   if (!res.ok) {
     const text = await res.text();
@@ -27,23 +41,27 @@ const handleResponse = async (res: Response, defaultError: string) => {
 export const api = {
   // Auth
   verifyToken: async (token: string): Promise<boolean> => {
-    const res = await fetch(`${API_BASE}/auth/verify`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': token
-      }
-    });
-    return res.ok;
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/auth/verify`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token
+        }
+      });
+      return res.ok;
+    } catch (e) {
+      return false;
+    }
   },
 
   // Accounts
   getAccounts: async (): Promise<Account[]> => {
-    const res = await fetch(`${API_BASE}/accounts`, { headers: getHeaders() });
+    const res = await fetchWithRetry(`${API_BASE}/accounts`, { headers: getHeaders() });
     const data = await handleResponse(res, 'Failed to fetch accounts');
     return Array.isArray(data) ? data : [];
   },
   createAccount: async (account: Partial<Account>): Promise<{ id: number }> => {
-    const res = await fetch(`${API_BASE}/accounts`, {
+    const res = await fetchWithRetry(`${API_BASE}/accounts`, {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(account),
@@ -51,7 +69,7 @@ export const api = {
     return handleResponse(res, 'Failed to create account');
   },
   updateAccount: async (id: number, data: Partial<Account>): Promise<void> => {
-    const res = await fetch(`${API_BASE}/accounts/${id}`, {
+    const res = await fetchWithRetry(`${API_BASE}/accounts/${id}`, {
       method: 'PATCH',
       headers: getHeaders(),
       body: JSON.stringify(data),
@@ -85,20 +103,20 @@ export const api = {
 
   // Metrics
   getMetrics: async (accountId: number): Promise<Metric[]> => {
-    const res = await fetch(`${API_BASE}/metrics/${accountId}`, { headers: getHeaders() });
+    const res = await fetchWithRetry(`${API_BASE}/metrics/${accountId}`, { headers: getHeaders() });
     const data = await handleResponse(res, 'Failed to fetch metrics');
     return Array.isArray(data) ? data : [];
   },
   getRealtimeMetrics: async (accountId: number): Promise<any> => {
-    const res = await fetch(`${API_BASE}/accounts/${accountId}/realtime-metrics`, { headers: getHeaders() });
+    const res = await fetchWithRetry(`${API_BASE}/accounts/${accountId}/realtime-metrics`, { headers: getHeaders() });
     return handleResponse(res, 'Failed to fetch realtime metrics');
   },
   resolveHandle: async (platform: string, handle: string): Promise<{ id: string | null }> => {
-    const res = await fetch(`${API_BASE}/resolve-handle?platform=${platform}&handle=${encodeURIComponent(handle)}`, { headers: getHeaders() });
+    const res = await fetchWithRetry(`${API_BASE}/resolve-handle?platform=${platform}&handle=${encodeURIComponent(handle)}`, { headers: getHeaders() });
     return handleResponse(res, 'Failed to resolve handle');
   },
   addMetric: async (metric: Partial<Metric>): Promise<void> => {
-    const res = await fetch(`${API_BASE}/metrics`, {
+    const res = await fetchWithRetry(`${API_BASE}/metrics`, {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(metric),
@@ -224,7 +242,7 @@ export const api = {
     await handleResponse(res, 'Failed to trigger account ingestion');
   },
   getSystemStatus: async (): Promise<{ youtube: boolean; meta: boolean; gemini: boolean; meta_expired: boolean }> => {
-    const res = await fetch(`${API_BASE}/system/status`, { headers: getHeaders() });
+    const res = await fetchWithRetry(`${API_BASE}/system/status`, { headers: getHeaders() });
     return handleResponse(res, 'Failed to fetch system status');
   },
   testKey: async (type: string, key: string): Promise<{ success: boolean; message: string }> => {
