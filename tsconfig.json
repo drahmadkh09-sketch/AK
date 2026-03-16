@@ -5,7 +5,6 @@
     "moduleResolution": "NodeNext",
     "outDir": "build",
     "rootDir": ".",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
