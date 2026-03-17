@@ -1,4 +1,4 @@
-import { Account, Metric, AuditLog, Insight, Settings } from './types.js';
+import { Account, Metric, AuditLog, Insight, Settings } from './types';
 
 const API_BASE = '/api';
 

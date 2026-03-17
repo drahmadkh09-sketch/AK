@@ -2,11 +2,12 @@ import Database from "better-sqlite3";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
-import { fetchMetaMetrics, fetchYouTubeMetrics, resolveYouTubeHandle, resolveInstagramHandle, SocialMetrics, getInstagramBusinessIdFromToken } from "./src/services/socialApi.js";
+import { fetchMetaMetrics, fetchYouTubeMetrics, resolveYouTubeHandle, resolveInstagramHandle, SocialMetrics, getInstagramBusinessIdFromToken } from "./src/services/socialApi";
 
 dotenv.config({ override: true });
 
-const dbInstance = new Database("dashboard.db");
+const dbPath = process.env.DB_PATH || "dashboard.db";
+const dbInstance = new Database(dbPath);
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
